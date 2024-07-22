@@ -1,19 +1,19 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: coil-controller
+  name: coil-egress-controller
   namespace: system
   labels:
-    app.kubernetes.io/component: coil-controller
+    app.kubernetes.io/component: coil-egress-controller
 spec:
   selector:
     matchLabels:
-      app.kubernetes.io/component: coil-controller
+      app.kubernetes.io/component: coil-egress-controller
   replicas: 2
   template:
     metadata:
       labels:
-        app.kubernetes.io/component: coil-controller
+        app.kubernetes.io/component: coil-egress-controller
     spec:
       hostNetwork: true
       priorityClassName: system-cluster-critical
@@ -33,17 +33,17 @@ spec:
                 matchExpressions:
                 - key: app.kubernetes.io/component
                   operator: In
-                  values: ["coil-controller"]
+                  values: ["coil-egress-controller"]
               topologyKey: kubernetes.io/hostname
       securityContext:
         runAsUser: 10000
         runAsGroup: 10000
-      serviceAccountName: coil-controller
+      serviceAccountName: coil-egress-controller
       terminationGracePeriodSeconds: 10
       containers:
-      - name: coil-controller
+      - name: coil-egress-controller
         image: coil:dev
-        command: ["coil-controller"]
+        command: ["coil-egress-controller"]
         args:
           - --zap-stacktrace-level=panic
         env:
@@ -57,13 +57,13 @@ spec:
               fieldPath: metadata.name
         ports:
         - name: metrics
-          containerPort: 9386
+          containerPort: 9396
           protocol: TCP
         - name: health
-          containerPort: 9387
+          containerPort: 9397
           protocol: TCP
         - name: webhook-server
-          containerPort: 9443
+          containerPort: 9444
           protocol: TCP
         resources:
           requests:
@@ -87,4 +87,4 @@ spec:
       - name: cert
         secret:
           defaultMode: 420
-          secretName: coilv2-webhook-server-cert
+          secretName: coilv2-egress-webhook-server-cert

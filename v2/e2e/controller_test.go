@@ -10,9 +10,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-var _ = Describe("coil-controller", func() {
+var _ = Describe("coil-ipam-controller", func() {
 	It("should elect a leader instance of coil-controller", func() {
-		kubectlSafe(nil, "-n", "kube-system", "get", "leases", "coil-leader")
+		kubectlSafe(nil, "-n", "kube-system", "get", "leases", "coil-ipam-leader")
 	})
 
 	It("should run the admission webhook", func() {
@@ -23,7 +23,7 @@ var _ = Describe("coil-controller", func() {
 
 	It("should export metrics", func() {
 		pods := &corev1.PodList{}
-		getResourceSafe("kube-system", "pods", "", "app.kubernetes.io/component=coil-controller", pods)
+		getResourceSafe("kube-system", "pods", "", "app.kubernetes.io/component=coil-ipam-controller", pods)
 		Expect(pods.Items).Should(HaveLen(2))
 
 		node := pods.Items[0].Spec.NodeName
@@ -48,5 +48,25 @@ var _ = Describe("coil-controller", func() {
 			}
 			return abl.Items
 		}, 20).Should(BeEmpty())
+	})
+})
+
+var _ = Describe("coil-egress-controller", func() {
+	It("should elect a leader instance of coil-controller", func() {
+		kubectlSafe(nil, "-n", "kube-system", "get", "leases", "coil-egress-leader")
+	})
+
+	It("should export metrics", func() {
+		pods := &corev1.PodList{}
+		getResourceSafe("kube-system", "pods", "", "app.kubernetes.io/component=coil-egress-controller", pods)
+		Expect(pods.Items).Should(HaveLen(2))
+
+		node := pods.Items[0].Spec.NodeName
+		out, err := runOnNode(node, "curl", "-sf", "http://localhost:9396/metrics")
+		Expect(err).ShouldNot(HaveOccurred())
+
+		mfs, err := (&expfmt.TextParser{}).TextToMetricFamilies(bytes.NewReader(out))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(mfs).NotTo(BeEmpty())
 	})
 })
