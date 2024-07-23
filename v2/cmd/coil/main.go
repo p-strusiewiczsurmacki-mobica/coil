@@ -25,7 +25,7 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return types.NewError(types.ErrInvalidNetworkConfig, "coil must be called as the first plugin", "")
 	}
 
-	cniArgs, err := makeCNIArgs(args)
+	cniArgs, err := makeCNIArgs(args, conf)
 	if err != nil {
 		return err
 	}
@@ -59,7 +59,7 @@ func cmdDel(args *skel.CmdArgs) error {
 		return err
 	}
 
-	cniArgs, err := makeCNIArgs(args)
+	cniArgs, err := makeCNIArgs(args, conf)
 	if err != nil {
 		return err
 	}
@@ -87,7 +87,7 @@ func cmdCheck(args *skel.CmdArgs) error {
 		return err
 	}
 
-	cniArgs, err := makeCNIArgs(args)
+	cniArgs, err := makeCNIArgs(args, conf)
 	if err != nil {
 		return err
 	}

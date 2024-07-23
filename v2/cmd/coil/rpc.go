@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"net"
+	"strconv"
 
 	"github.com/containernetworking/cni/pkg/skel"
 	"github.com/containernetworking/cni/pkg/types"
 	"github.com/cybozu-go/coil/v2/pkg/cnirpc"
+	"github.com/cybozu-go/coil/v2/pkg/constants"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/resolver"
@@ -14,20 +16,25 @@ import (
 )
 
 // makeCNIArgs creates *CNIArgs.
-func makeCNIArgs(args *skel.CmdArgs) (*cnirpc.CNIArgs, error) {
+func makeCNIArgs(args *skel.CmdArgs, conf *PluginConf) (*cnirpc.CNIArgs, error) {
 	env := &PluginEnvArgs{}
 	if err := types.LoadArgs(args.Args, env); err != nil {
 		return nil, types.NewError(types.ErrInvalidEnvironmentVariables, "failed to load CNI_ARGS", err.Error())
 	}
 
+	argsData := env.Map()
+	argsData[constants.EnableIPAM] = strconv.FormatBool(conf.EnableIPAM)
+	argsData[constants.EnableEgress] = strconv.FormatBool(conf.EnableEgress)
+
 	cniArgs := &cnirpc.CNIArgs{
 		ContainerId: args.ContainerID,
 		Netns:       args.Netns,
 		Ifname:      args.IfName,
-		Args:        env.Map(),
+		Args:        argsData,
 		Path:        args.Path,
 		StdinData:   args.StdinData,
 	}
+
 	return cniArgs, nil
 }
 

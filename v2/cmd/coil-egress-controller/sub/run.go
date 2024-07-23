@@ -12,8 +12,6 @@ import (
 	"github.com/cybozu-go/coil/v2/controllers"
 	"github.com/cybozu-go/coil/v2/pkg/constants"
 	"github.com/cybozu-go/coil/v2/pkg/indexing"
-	"github.com/cybozu-go/coil/v2/pkg/ipam"
-	"github.com/cybozu-go/coil/v2/runners"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -57,7 +55,7 @@ func subMain() error {
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                  scheme,
 		LeaderElection:          true,
-		LeaderElectionID:        "coil-leader",
+		LeaderElectionID:        "coil-egress-leader",
 		LeaderElectionNamespace: "kube-system", // coil should run in kube-system
 		Metrics: metricsserver.Options{
 			BindAddress: config.metricsAddr,
@@ -83,27 +81,8 @@ func subMain() error {
 
 	// register controllers
 
-	pm := ipam.NewPoolManager(mgr.GetClient(), mgr.GetAPIReader(), ctrl.Log.WithName("pool-manager"), scheme)
-	apctrl := controllers.AddressPoolReconciler{
-		Client:  mgr.GetClient(),
-		Scheme:  scheme,
-		Manager: pm,
-	}
-	if err := apctrl.SetupWithManager(mgr); err != nil {
-		return err
-	}
-
 	ctx := ctrl.SetupSignalHandler()
 	if err := indexing.SetupIndexForAddressBlock(ctx, mgr); err != nil {
-		return err
-	}
-
-	brctrl := controllers.BlockRequestReconciler{
-		Client:  mgr.GetClient(),
-		Scheme:  scheme,
-		Manager: pm,
-	}
-	if err := brctrl.SetupWithManager(mgr); err != nil {
 		return err
 	}
 
@@ -129,19 +108,11 @@ func subMain() error {
 
 	// register webhooks
 
-	if err := (&coilv2.AddressPool{}).SetupWebhookWithManager(mgr); err != nil {
-		return err
-	}
 	if err := (&coilv2.Egress{}).SetupWebhookWithManager(mgr); err != nil {
 		return err
 	}
 
-	// other runners
-
-	gc := runners.NewGarbageCollector(mgr, ctrl.Log.WithName("gc"), config.gcInterval)
-	if err := mgr.Add(gc); err != nil {
-		return err
-	}
+	// start manager
 
 	setupLog.Info(fmt.Sprintf("starting manager (version: %s)", v2.Version()))
 	if err := mgr.Start(ctx); err != nil {

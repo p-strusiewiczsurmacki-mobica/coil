@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 
 	coilv2 "github.com/cybozu-go/coil/v2/api/v2"
@@ -189,21 +190,34 @@ func (s *coildServer) Add(ctx context.Context, args *cnirpc.CNIArgs) (*cnirpc.Ad
 		return nil, newInternalError(err, "failed to get pod")
 	}
 
+	ipamEnabled := true
+	var err error
 	// fetch namespace to decide the pool name
-	ns := &corev1.Namespace{}
-	if err := s.client.Get(ctx, client.ObjectKey{Name: podNS}, ns); err != nil {
-		logger.Sugar().Errorw("failed to get namespace", "name", podNS, "error", err)
-		return nil, newInternalError(err, "failed to get namespace")
-	}
-	poolName := constants.DefaultPool
-	if v, ok := ns.Annotations[constants.AnnPool]; ok {
-		poolName = v
+	if args.Args[constants.EnableIPAM] != "" {
+		if ipamEnabled, err = strconv.ParseBool(args.Args[constants.EnableIPAM]); err != nil {
+			return nil, newInternalError(err, "Error parsing bool value for IPAM enable flag")
+		}
 	}
 
-	ipv4, ipv6, err := s.nodeIPAM.Allocate(ctx, poolName, args.ContainerId, args.Ifname)
-	if err != nil {
-		logger.Sugar().Errorw("failed to allocate address", "error", err)
-		return nil, newInternalError(err, "failed to allocate address")
+	var ipv4, ipv6 net.IP
+	var poolName string
+
+	if ipamEnabled {
+		ns := &corev1.Namespace{}
+		if err := s.client.Get(ctx, client.ObjectKey{Name: podNS}, ns); err != nil {
+			logger.Sugar().Errorw("failed to get namespace", "name", podNS, "error", err)
+			return nil, newInternalError(err, "failed to get namespace")
+		}
+		poolName = constants.DefaultPool
+		if v, ok := ns.Annotations[constants.AnnPool]; ok {
+			poolName = v
+		}
+
+		ipv4, ipv6, err = s.nodeIPAM.Allocate(ctx, poolName, args.ContainerId, args.Ifname)
+		if err != nil {
+			logger.Sugar().Errorw("failed to allocate address", "error", err)
+			return nil, newInternalError(err, "failed to allocate address")
+		}
 	}
 
 	hook, err := s.getHook(ctx, pod)
@@ -232,11 +246,13 @@ func (s *coildServer) Add(ctx context.Context, args *cnirpc.CNIArgs) (*cnirpc.Ad
 
 	data, err := json.Marshal(result)
 	if err != nil {
-		if err := s.podNet.Destroy(args.ContainerId, args.Ifname); err != nil {
-			logger.Sugar().Warnw("failed to destroy pod network", "error", err)
-		}
-		if err := s.nodeIPAM.Free(ctx, args.ContainerId, args.Ifname); err != nil {
-			logger.Sugar().Warnw("failed to deallocate address", "error", err)
+		if ipamEnabled {
+			if err := s.podNet.Destroy(args.ContainerId, args.Ifname); err != nil {
+				logger.Sugar().Warnw("failed to destroy pod network", "error", err)
+			}
+			if err := s.nodeIPAM.Free(ctx, args.ContainerId, args.Ifname); err != nil {
+				logger.Sugar().Warnw("failed to deallocate address", "error", err)
+			}
 		}
 		logger.Sugar().Errorw("failed to marshal the result", "error", err)
 		return nil, newInternalError(err, "failed to marshal the result")

@@ -4,7 +4,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"time"
 
 	v2 "github.com/cybozu-go/coil/v2"
 	"github.com/spf13/cobra"
@@ -17,7 +16,6 @@ var config struct {
 	healthAddr  string
 	webhookAddr string
 	certDir     string
-	gcInterval  time.Duration
 	egressPort  int32
 	zapOpts     zap.Options
 }
@@ -48,7 +46,6 @@ func init() {
 	pf.StringVar(&config.healthAddr, "health-addr", ":9387", "bind address of health/readiness probes")
 	pf.StringVar(&config.webhookAddr, "webhook-addr", ":9443", "bind address of admission webhook")
 	pf.StringVar(&config.certDir, "cert-dir", "/certs", "directory to locate TLS certs for webhook")
-	pf.DurationVar(&config.gcInterval, "gc-interval", 1*time.Hour, "garbage collection interval")
 	pf.Int32Var(&config.egressPort, "egress-port", 5555, "UDP port number used by coil-egress")
 
 	goflags := flag.NewFlagSet("klog", flag.ExitOnError)

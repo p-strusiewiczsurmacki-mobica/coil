@@ -31,12 +31,16 @@ type PluginConf struct {
 	types.NetConf
 
 	// Coil specific flags
-	Socket string `json:"socket"`
+	Socket       string `json:"socket"`
+	EnableIPAM   bool   `json:"ipam"`
+	EnableEgress bool   `json:"egress"`
 }
 
 func parseConfig(stdin []byte) (*PluginConf, error) {
 	conf := &PluginConf{
-		Socket: constants.DefaultSocketPath,
+		Socket:       constants.DefaultSocketPath,
+		EnableIPAM:   true,
+		EnableEgress: true,
 	}
 
 	if err := json.Unmarshal(stdin, conf); err != nil {
