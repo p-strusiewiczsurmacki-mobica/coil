@@ -190,13 +190,9 @@ func (s *coildServer) Add(ctx context.Context, args *cnirpc.CNIArgs) (*cnirpc.Ad
 		return nil, newInternalError(err, "failed to get pod")
 	}
 
-	ipamEnabled := true
-	var err error
-	// fetch namespace to decide the pool name
-	if args.Args[constants.EnableIPAM] != "" {
-		if ipamEnabled, err = strconv.ParseBool(args.Args[constants.EnableIPAM]); err != nil {
-			return nil, newInternalError(err, "Error parsing bool value for IPAM enable flag")
-		}
+	ipamEnabled, egressEnabled, err := getSettings(args)
+	if err != nil {
+		return nil, newInternalError(err, "error parsing settings")
 	}
 
 	var ipv4, ipv6 net.IP
@@ -218,27 +214,35 @@ func (s *coildServer) Add(ctx context.Context, args *cnirpc.CNIArgs) (*cnirpc.Ad
 			logger.Sugar().Errorw("failed to allocate address", "error", err)
 			return nil, newInternalError(err, "failed to allocate address")
 		}
+	} else {
+		ipv4, ipv6 = getPodIPs(pod)
 	}
 
-	hook, err := s.getHook(ctx, pod)
-	if err != nil {
-		logger.Sugar().Errorw("failed to setup NAT hook", "error", err)
-		return nil, newInternalError(err, "failed to setup NAT hook")
-	}
-	if hook != nil {
-		logger.Sugar().Info("enabling NAT")
+	var hook nodenet.SetupHook
+	if egressEnabled {
+		hook, err = s.getHook(ctx, pod)
+		if err != nil {
+			logger.Sugar().Errorw("failed to setup NAT hook", "error", err)
+			return nil, newInternalError(err, "failed to setup NAT hook")
+		}
+
+		if hook != nil {
+			logger.Sugar().Info("enabling NAT")
+		}
 	}
 
-	result, err := s.podNet.Setup(args.Netns, podName, podNS, &nodenet.PodNetConf{
+	result, err := s.podNet.SetupIPAM(args.Netns, podName, podNS, &nodenet.PodNetConf{
 		ContainerId: args.ContainerId,
 		IFace:       args.Ifname,
 		IPv4:        ipv4,
 		IPv6:        ipv6,
 		PoolName:    poolName,
-	}, hook)
+	}, hook, ipamEnabled, egressEnabled)
 	if err != nil {
-		if err := s.nodeIPAM.Free(ctx, args.ContainerId, args.Ifname); err != nil {
-			logger.Sugar().Warnw("failed to deallocate address", "error", err)
+		if ipamEnabled {
+			if err := s.nodeIPAM.Free(ctx, args.ContainerId, args.Ifname); err != nil {
+				logger.Sugar().Warnw("failed to deallocate address", "error", err)
+			}
 		}
 		logger.Sugar().Errorw("failed to setup pod network", "error", err)
 		return nil, newInternalError(err, "failed to setup pod network")
@@ -260,17 +264,43 @@ func (s *coildServer) Add(ctx context.Context, args *cnirpc.CNIArgs) (*cnirpc.Ad
 	return &cnirpc.AddResponse{Result: data}, nil
 }
 
+func getPodIPs(pod *corev1.Pod) (net.IP, net.IP) {
+	var ipv4, ipv6 net.IP
+	for _, ip := range pod.Status.PodIPs {
+		addr := net.ParseIP(ip.IP)
+		if addr != nil {
+			if ipv4 == nil && addr.To4() != nil {
+				ipv4 = addr
+			}
+			if ipv6 == nil && addr.To16() != nil {
+				ipv6 = addr
+			}
+		}
+		if ipv4 != nil && ipv6 != nil {
+			break
+		}
+	}
+	return ipv4, ipv6
+}
+
 func (s *coildServer) Del(ctx context.Context, args *cnirpc.CNIArgs) (*emptypb.Empty, error) {
 	logger := withCtxFields(ctx, s.logger)
 
-	if err := s.podNet.Destroy(args.ContainerId, args.Ifname); err != nil {
-		logger.Sugar().Errorw("failed to destroy pod network", "error", err)
-		return nil, newInternalError(err, "failed to destroy pod network")
+	ipamEnabled, _, err := getSettings(args)
+	if err != nil {
+		return nil, newInternalError(err, "error parsing settings")
 	}
 
-	if err := s.nodeIPAM.Free(ctx, args.ContainerId, args.Ifname); err != nil {
-		logger.Sugar().Errorw("failed to free addresses", "error", err)
-		return nil, newInternalError(err, "failed to free addresses")
+	if ipamEnabled {
+		if err := s.podNet.Destroy(args.ContainerId, args.Ifname); err != nil {
+			logger.Sugar().Errorw("failed to destroy pod network", "error", err)
+			return nil, newInternalError(err, "failed to destroy pod network")
+		}
+
+		if err := s.nodeIPAM.Free(ctx, args.ContainerId, args.Ifname); err != nil {
+			logger.Sugar().Errorw("failed to free addresses", "error", err)
+			return nil, newInternalError(err, "failed to free addresses")
+		}
 	}
 	return &emptypb.Empty{}, nil
 }
@@ -278,10 +308,18 @@ func (s *coildServer) Del(ctx context.Context, args *cnirpc.CNIArgs) (*emptypb.E
 func (s *coildServer) Check(ctx context.Context, args *cnirpc.CNIArgs) (*emptypb.Empty, error) {
 	logger := withCtxFields(ctx, s.logger)
 
-	if err := s.podNet.Check(args.ContainerId, args.Ifname); err != nil {
-		logger.Sugar().Errorw("check failed", "error", err)
+	ipamEnabled, _, err := getSettings(args)
+	if err != nil {
 		return nil, newInternalError(err, "check failed")
 	}
+
+	if ipamEnabled {
+		if err := s.podNet.Check(args.ContainerId, args.Ifname); err != nil {
+			logger.Sugar().Errorw("check failed", "error", err)
+			return nil, newInternalError(err, "check failed")
+		}
+	}
+
 	return &emptypb.Empty{}, nil
 }
 
@@ -433,4 +471,24 @@ func loggingFields(_ context.Context, c interceptors.CallMeta) logging.Fields {
 
 func withCtxFields(ctx context.Context, l *zap.Logger) *zap.Logger {
 	return l.With(toZapFields(logging.ExtractFields(ctx))...)
+}
+
+func getSettings(args *cnirpc.CNIArgs) (bool, bool, error) {
+	ipamEnabled := true
+	egressEnabled := true
+	var err error
+	// fetch namespace to decide the pool name
+	if args.Args[constants.EnableIPAM] != "" {
+		if ipamEnabled, err = strconv.ParseBool(args.Args[constants.EnableIPAM]); err != nil {
+			return false, false, newInternalError(err, "error parsing bool value for IPAM enable flag")
+		}
+	}
+
+	if args.Args[constants.EnableEgress] != "" {
+		if egressEnabled, err = strconv.ParseBool(args.Args[constants.EnableEgress]); err != nil {
+			return false, false, newInternalError(err, "error parsing bool value for Egress enable flag")
+		}
+	}
+
+	return ipamEnabled, egressEnabled, nil
 }

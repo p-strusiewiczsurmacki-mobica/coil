@@ -21,8 +21,8 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return err
 	}
 
-	if conf.PrevResult != nil {
-		return types.NewError(types.ErrInvalidNetworkConfig, "coil must be called as the first plugin", "")
+	if conf.EnableIPAM && conf.PrevResult != nil {
+		return types.NewError(types.ErrInvalidNetworkConfig, "coil must be called as the first plugin when IPAM related features are enabled", "")
 	}
 
 	cniArgs, err := makeCNIArgs(args, conf)

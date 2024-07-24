@@ -51,7 +51,7 @@ type PodNetwork interface {
 	// Setup connects the host network and the container network with a veth pair.
 	// `nsPath` is the container network namespace's (possibly bind-mounted) file.
 	// If `hook` is non-nil, it is called in the Pod network.
-	Setup(nsPath, podName, podNS string, conf *PodNetConf, hook SetupHook) (*current.Result, error)
+	Setup(nsPath, podName, podNS string, conf *PodNetConf, hook SetupHook, ipamEnabled, egressEnabled bool) (*current.Result, error)
 
 	// Update updates the container network configuration
 	// Currently, it only updates configuration using a SetupHook, e.g. NAT setting
@@ -187,21 +187,9 @@ func (pn *podNetwork) initRule(family int) error {
 	return nil
 }
 
-func (pn *podNetwork) Setup(nsPath, podName, podNS string, conf *PodNetConf, hook SetupHook) (*current.Result, error) {
+func (pn *podNetwork) Setup(nsPath, podName, podNS string, conf *PodNetConf, hook SetupHook, ipamEnabled, egressEnabled bool) (*current.Result, error) {
 	pn.mu.Lock()
 	defer pn.mu.Unlock()
-
-	// cleanup garbage veth
-	switch l, err := lookup(conf.ContainerId, conf.IFace); err {
-	case errNotFound:
-	case nil:
-		// remove garbage link, if any
-		if err := netlink.LinkDel(l); err != nil {
-			return nil, fmt.Errorf("netlink: failed to delete broken link: %w", err)
-		}
-	default:
-		return nil, err
-	}
 
 	containerNS, err := ns.GetNS(nsPath)
 	if err != nil {
@@ -209,196 +197,216 @@ func (pn *podNetwork) Setup(nsPath, podName, podNS string, conf *PodNetConf, hoo
 	}
 	defer containerNS.Close()
 
-	// setup veth and configure IP addresses
+	var hostIPv6 net.IP
+	var hLink netlink.Link
+
 	result := &current.Result{
 		CNIVersion: current.ImplementedSpecVersion,
 	}
-	err = containerNS.Do(func(hostNS ns.NetNS) error {
-		vethName := ""
-		if pn.compatCalico {
-			vethName = calicoVethName(podName, podNS)
-		}
-		hVeth, cVeth, err := ip.SetupVethWithName(conf.IFace, vethName, pn.mtu, "", hostNS)
-		if err != nil {
-			return fmt.Errorf("failed to setup veth: %w", err)
-		}
 
-		cLink, err := netlink.LinkByIndex(cVeth.Index)
-		if err != nil {
-			return fmt.Errorf("netlink: failed to get veth link for container: %w", err)
-		}
-
-		if err := netlink.LinkSetUp(cLink); err != nil {
-			netlink.LinkDel(cLink)
-			return fmt.Errorf("netlink: failed to up link for container: %w", err)
-		}
-
-		idx := 0
-		if conf.IPv4 != nil {
-			ipnet := netlink.NewIPNet(conf.IPv4)
-			err := netlink.AddrAdd(cLink, &netlink.Addr{
-				IPNet: ipnet,
-				Scope: unix.RT_SCOPE_UNIVERSE,
-			})
-			if err != nil {
-				netlink.LinkDel(cLink)
-				return fmt.Errorf("netlink: failed to add an address: %w", err)
+	if ipamEnabled {
+		// cleanup garbage veth
+		switch l, err := lookup(conf.ContainerId, conf.IFace); err {
+		case errNotFound:
+		case nil:
+			// remove garbage link, if any
+			if err := netlink.LinkDel(l); err != nil {
+				return nil, fmt.Errorf("netlink: failed to delete broken link: %w", err)
 			}
-			result.IPs = append(result.IPs, &current.IPConfig{
-				Address:   *ipnet,
-				Interface: &idx,
-			})
+		default:
+			return nil, err
 		}
 
+		// setup veth and configure IP addresses
+		err = containerNS.Do(func(hostNS ns.NetNS) error {
+			vethName := ""
+			if pn.compatCalico {
+				vethName = calicoVethName(podName, podNS)
+			}
+			hVeth, cVeth, err := ip.SetupVethWithName(conf.IFace, vethName, pn.mtu, "", hostNS)
+			if err != nil {
+				return fmt.Errorf("failed to setup veth: %w", err)
+			}
+
+			cLink, err := netlink.LinkByIndex(cVeth.Index)
+			if err != nil {
+				return fmt.Errorf("netlink: failed to get veth link for container: %w", err)
+			}
+
+			if err := netlink.LinkSetUp(cLink); err != nil {
+				netlink.LinkDel(cLink)
+				return fmt.Errorf("netlink: failed to up link for container: %w", err)
+			}
+
+			idx := 0
+			if conf.IPv4 != nil {
+				ipnet := netlink.NewIPNet(conf.IPv4)
+				err := netlink.AddrAdd(cLink, &netlink.Addr{
+					IPNet: ipnet,
+					Scope: unix.RT_SCOPE_UNIVERSE,
+				})
+				if err != nil {
+					netlink.LinkDel(cLink)
+					return fmt.Errorf("netlink: failed to add an address: %w", err)
+				}
+				result.IPs = append(result.IPs, &current.IPConfig{
+					Address:   *ipnet,
+					Interface: &idx,
+				})
+			}
+
+			if conf.IPv6 != nil {
+				ipnet := netlink.NewIPNet(conf.IPv6)
+				err := netlink.AddrAdd(cLink, &netlink.Addr{
+					IPNet: ipnet,
+					Scope: unix.RT_SCOPE_UNIVERSE,
+				})
+				if err != nil {
+					netlink.LinkDel(cLink)
+					return fmt.Errorf("netlink: failed to add an address: %w", err)
+				}
+				ip.SettleAddresses(conf.IFace, 10)
+				result.IPs = append(result.IPs, &current.IPConfig{
+					Address:   *ipnet,
+					Interface: &idx,
+				})
+			}
+
+			result.Interfaces = []*current.Interface{
+				{
+					Name:    cVeth.Name,
+					Mac:     cVeth.HardwareAddr.String(),
+					Sandbox: nsPath,
+				},
+				{
+					Name: hVeth.Name,
+					Mac:  hVeth.HardwareAddr.String(),
+				},
+			}
+
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		// install cleanup handler upon errors
+		hName := result.Interfaces[1].Name
+		hLink, err = netlink.LinkByName(hName)
+		if err != nil {
+			return nil, fmt.Errorf("netlink: failed to look up the host-side veth: %w", err)
+		}
+		defer func() {
+			if hLink != nil {
+				netlink.LinkDel(hLink)
+			}
+		}()
+
+		// give identifer as an alias of host veth
+		err = netlink.LinkSetAlias(hLink, genAlias(conf))
+		if err != nil {
+			return nil, fmt.Errorf("netlink: failed to set alias: %w", err)
+		}
+
+		// setup routing on the host side
 		if conf.IPv6 != nil {
-			ipnet := netlink.NewIPNet(conf.IPv6)
-			err := netlink.AddrAdd(cLink, &netlink.Addr{
-				IPNet: ipnet,
+			ip.SettleAddresses(hName, 10)
+
+			err = netlink.AddrAdd(hLink, &netlink.Addr{
+				IPNet: netlink.NewIPNet(pn.hostIPv6),
 				Scope: unix.RT_SCOPE_UNIVERSE,
 			})
 			if err != nil {
-				netlink.LinkDel(cLink)
-				return fmt.Errorf("netlink: failed to add an address: %w", err)
+				return nil, fmt.Errorf("netlink: failed to add a host IPv6 address: %w", err)
 			}
-			ip.SettleAddresses(conf.IFace, 10)
-			result.IPs = append(result.IPs, &current.IPConfig{
-				Address:   *ipnet,
-				Interface: &idx,
+
+			v6Addrs, err := netlink.AddrList(hLink, netlink.FAMILY_V6)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get v6 addresses: %w", err)
+			}
+			for _, a := range v6Addrs {
+				if a.Scope == unix.RT_SCOPE_LINK {
+					hostIPv6 = a.IP
+					break
+				}
+			}
+			if hostIPv6 == nil {
+				return nil, fmt.Errorf("failed to find link-local address of %s", hLink.Attrs().Name)
+			}
+
+			err = netlink.RouteAdd(&netlink.Route{
+				Dst:       netlink.NewIPNet(conf.IPv6),
+				LinkIndex: hLink.Attrs().Index,
+				Scope:     netlink.SCOPE_LINK,
+				Protocol:  pn.protocolId,
+				Table:     pn.podTableId,
 			})
-		}
-
-		result.Interfaces = []*current.Interface{
-			{
-				Name:    cVeth.Name,
-				Mac:     cVeth.HardwareAddr.String(),
-				Sandbox: nsPath,
-			},
-			{
-				Name: hVeth.Name,
-				Mac:  hVeth.HardwareAddr.String(),
-			},
-		}
-
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	// install cleanup handler upon errors
-	hName := result.Interfaces[1].Name
-	hLink, err := netlink.LinkByName(hName)
-	if err != nil {
-		return nil, fmt.Errorf("netlink: failed to look up the host-side veth: %w", err)
-	}
-	defer func() {
-		if hLink != nil {
-			netlink.LinkDel(hLink)
-		}
-	}()
-
-	// give identifer as an alias of host veth
-	err = netlink.LinkSetAlias(hLink, genAlias(conf))
-	if err != nil {
-		return nil, fmt.Errorf("netlink: failed to set alias: %w", err)
-	}
-
-	// setup routing on the host side
-	var hostIPv6 net.IP
-	if conf.IPv6 != nil {
-		ip.SettleAddresses(hName, 10)
-
-		err = netlink.AddrAdd(hLink, &netlink.Addr{
-			IPNet: netlink.NewIPNet(pn.hostIPv6),
-			Scope: unix.RT_SCOPE_UNIVERSE,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("netlink: failed to add a host IPv6 address: %w", err)
-		}
-
-		v6Addrs, err := netlink.AddrList(hLink, netlink.FAMILY_V6)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get v6 addresses: %w", err)
-		}
-		for _, a := range v6Addrs {
-			if a.Scope == unix.RT_SCOPE_LINK {
-				hostIPv6 = a.IP
-				break
+			if err != nil {
+				return nil, fmt.Errorf("netlink: failed to add route to %s: %w", conf.IPv6.String(), err)
 			}
 		}
-		if hostIPv6 == nil {
-			return nil, fmt.Errorf("failed to find link-local address of %s", hLink.Attrs().Name)
-		}
+		if conf.IPv4 != nil {
+			err = netlink.AddrAdd(hLink, &netlink.Addr{
+				IPNet: netlink.NewIPNet(pn.hostIPv4),
+				Scope: unix.RT_SCOPE_UNIVERSE,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("netlink: failed to add a hostIPv4 address: %w", err)
+			}
 
-		err = netlink.RouteAdd(&netlink.Route{
-			Dst:       netlink.NewIPNet(conf.IPv6),
-			LinkIndex: hLink.Attrs().Index,
-			Scope:     netlink.SCOPE_LINK,
-			Protocol:  pn.protocolId,
-			Table:     pn.podTableId,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("netlink: failed to add route to %s: %w", conf.IPv6.String(), err)
-		}
-	}
-	if conf.IPv4 != nil {
-		err = netlink.AddrAdd(hLink, &netlink.Addr{
-			IPNet: netlink.NewIPNet(pn.hostIPv4),
-			Scope: unix.RT_SCOPE_UNIVERSE,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("netlink: failed to add a hostIPv4 address: %w", err)
-		}
-
-		err = netlink.RouteAdd(&netlink.Route{
-			Dst:       netlink.NewIPNet(conf.IPv4),
-			LinkIndex: hLink.Attrs().Index,
-			Scope:     netlink.SCOPE_LINK,
-			Protocol:  pn.protocolId,
-			Table:     pn.podTableId,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("netlink: failed to add route to %s: %w", conf.IPv4.String(), err)
+			err = netlink.RouteAdd(&netlink.Route{
+				Dst:       netlink.NewIPNet(conf.IPv4),
+				LinkIndex: hLink.Attrs().Index,
+				Scope:     netlink.SCOPE_LINK,
+				Protocol:  pn.protocolId,
+				Table:     pn.podTableId,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("netlink: failed to add route to %s: %w", conf.IPv4.String(), err)
+			}
 		}
 	}
 
 	// setup routing on the container side
 	err = containerNS.Do(func(ns.NetNS) error {
-		l, err := netlink.LinkByName(conf.IFace)
-		if err != nil {
-			return fmt.Errorf("netlink: failed to find link: %w", err)
-		}
-		if conf.IPv4 != nil {
-			err := netlink.RouteAdd(&netlink.Route{
-				Dst:       netlink.NewIPNet(pn.hostIPv4),
-				LinkIndex: l.Attrs().Index,
-				Scope:     netlink.SCOPE_LINK,
-			})
+		if ipamEnabled {
+
+			l, err := netlink.LinkByName(conf.IFace)
 			if err != nil {
-				return fmt.Errorf("netlink: failed to add route to %s: %w", pn.hostIPv4.String(), err)
+				return fmt.Errorf("netlink: failed to find link: %w", err)
 			}
-			err = netlink.RouteAdd(&netlink.Route{
-				Dst:   defaultGWv4,
-				Gw:    pn.hostIPv4,
-				Scope: netlink.SCOPE_UNIVERSE,
-			})
-			if err != nil {
-				return fmt.Errorf("netlink: failed to add default gw %s: %w", pn.hostIPv4.String(), err)
+			if conf.IPv4 != nil {
+				err := netlink.RouteAdd(&netlink.Route{
+					Dst:       netlink.NewIPNet(pn.hostIPv4),
+					LinkIndex: l.Attrs().Index,
+					Scope:     netlink.SCOPE_LINK,
+				})
+				if err != nil {
+					return fmt.Errorf("netlink: failed to add route to %s: %w", pn.hostIPv4.String(), err)
+				}
+				err = netlink.RouteAdd(&netlink.Route{
+					Dst:   defaultGWv4,
+					Gw:    pn.hostIPv4,
+					Scope: netlink.SCOPE_UNIVERSE,
+				})
+				if err != nil {
+					return fmt.Errorf("netlink: failed to add default gw %s: %w", pn.hostIPv4.String(), err)
+				}
 			}
-		}
-		if conf.IPv6 != nil {
-			err = netlink.RouteAdd(&netlink.Route{
-				Dst:       defaultGWv6,
-				Gw:        hostIPv6,
-				LinkIndex: l.Attrs().Index, // hostIPv6 is a link-local address, so this is required
-				Scope:     netlink.SCOPE_UNIVERSE,
-			})
-			if err != nil {
-				return fmt.Errorf("netlink: failed to add default gw %s: %w", hostIPv6.String(), err)
+			if conf.IPv6 != nil {
+				err = netlink.RouteAdd(&netlink.Route{
+					Dst:       defaultGWv6,
+					Gw:        hostIPv6,
+					LinkIndex: l.Attrs().Index, // hostIPv6 is a link-local address, so this is required
+					Scope:     netlink.SCOPE_UNIVERSE,
+				})
+				if err != nil {
+					return fmt.Errorf("netlink: failed to add default gw %s: %w", hostIPv6.String(), err)
+				}
 			}
 		}
 
-		if hook != nil {
+		if egressEnabled && hook != nil {
 			return hook(conf.IPv4, conf.IPv6)
 		}
 		return nil
