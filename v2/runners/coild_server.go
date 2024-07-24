@@ -231,7 +231,7 @@ func (s *coildServer) Add(ctx context.Context, args *cnirpc.CNIArgs) (*cnirpc.Ad
 		}
 	}
 
-	result, err := s.podNet.SetupIPAM(args.Netns, podName, podNS, &nodenet.PodNetConf{
+	result, err := s.podNet.Setup(args.Netns, podName, podNS, &nodenet.PodNetConf{
 		ContainerId: args.ContainerId,
 		IFace:       args.Ifname,
 		IPv4:        ipv4,
