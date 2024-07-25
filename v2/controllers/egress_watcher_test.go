@@ -180,7 +180,11 @@ func (p *mockPodNetwork) List() ([]*nodenet.PodNetConf, error) {
 	panic("not implemented")
 }
 
-func (p *mockPodNetwork) Setup(nsPath, podName, podNS string, conf *nodenet.PodNetConf, hook nodenet.SetupHook, ipamEnabled, egressEnabled bool) (*current.Result, error) {
+func (p *mockPodNetwork) SetupIPAM(nsPath, podName, podNS string, conf *nodenet.PodNetConf) (*current.Result, error) {
+	panic("not implemented")
+}
+
+func (p *mockPodNetwork) SetupEgress(nsPath string, conf *nodenet.PodNetConf, hook nodenet.SetupHook) error {
 	panic("not implemented")
 }
 

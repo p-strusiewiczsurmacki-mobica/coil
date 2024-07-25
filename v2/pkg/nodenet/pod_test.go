@@ -72,11 +72,15 @@ func TestPodNetwork(t *testing.T) {
 
 	for name, conf := range podConfMap {
 
-		result, err := pn.Setup(nsPath(name), name, "ns1", &conf, func(ipv4, ipv6 net.IP) error {
+		result, err := pn.SetupIPAM(nsPath(name), name, "ns1", &conf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = pn.SetupEgress(nsPath(name), &conf, func(ipv4, ipv6 net.IP) error {
 			givenIPv4 = ipv4
 			givenIPv6 = ipv6
 			return nil
-		}, true, true)
+		})
 		if err != nil {
 			t.Fatal(err)
 		}

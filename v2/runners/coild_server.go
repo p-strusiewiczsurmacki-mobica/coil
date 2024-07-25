@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	current "github.com/containernetworking/cni/pkg/types/100"
 	coilv2 "github.com/cybozu-go/coil/v2/api/v2"
 	"github.com/cybozu-go/coil/v2/pkg/cnirpc"
 	"github.com/cybozu-go/coil/v2/pkg/constants"
@@ -218,9 +219,31 @@ func (s *coildServer) Add(ctx context.Context, args *cnirpc.CNIArgs) (*cnirpc.Ad
 		ipv4, ipv6 = getPodIPs(pod)
 	}
 
-	var hook nodenet.SetupHook
+	result := &current.Result{
+		CNIVersion: current.ImplementedSpecVersion,
+	}
+
+	config := &nodenet.PodNetConf{
+		ContainerId: args.ContainerId,
+		IFace:       args.Ifname,
+		IPv4:        ipv4,
+		IPv6:        ipv6,
+		PoolName:    poolName,
+	}
+
+	if ipamEnabled {
+		result, err = s.podNet.SetupIPAM(args.Netns, podName, podNS, config)
+		if err != nil {
+			if err := s.nodeIPAM.Free(ctx, args.ContainerId, args.Ifname); err != nil {
+				logger.Sugar().Warnw("failed to deallocate address", "error", err)
+			}
+			logger.Sugar().Errorw("failed to setup pod network", "error", err)
+			return nil, newInternalError(err, "failed to setup pod network IPAM")
+		}
+	}
+
 	if egressEnabled {
-		hook, err = s.getHook(ctx, pod)
+		hook, err := s.getHook(ctx, pod)
 		if err != nil {
 			logger.Sugar().Errorw("failed to setup NAT hook", "error", err)
 			return nil, newInternalError(err, "failed to setup NAT hook")
@@ -228,24 +251,10 @@ func (s *coildServer) Add(ctx context.Context, args *cnirpc.CNIArgs) (*cnirpc.Ad
 
 		if hook != nil {
 			logger.Sugar().Info("enabling NAT")
-		}
-	}
-
-	result, err := s.podNet.Setup(args.Netns, podName, podNS, &nodenet.PodNetConf{
-		ContainerId: args.ContainerId,
-		IFace:       args.Ifname,
-		IPv4:        ipv4,
-		IPv6:        ipv6,
-		PoolName:    poolName,
-	}, hook, ipamEnabled, egressEnabled)
-	if err != nil {
-		if ipamEnabled {
-			if err := s.nodeIPAM.Free(ctx, args.ContainerId, args.Ifname); err != nil {
-				logger.Sugar().Warnw("failed to deallocate address", "error", err)
+			if err := s.podNet.SetupEgress(args.Netns, config, hook); err != nil {
+				return nil, newInternalError(err, "failed to setup pod network egress")
 			}
 		}
-		logger.Sugar().Errorw("failed to setup pod network", "error", err)
-		return nil, newInternalError(err, "failed to setup pod network")
 	}
 
 	data, err := json.Marshal(result)

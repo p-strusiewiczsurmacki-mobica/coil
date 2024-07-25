@@ -171,7 +171,8 @@ pkg/cnirpc/cni_grpc.pb.go: pkg/cnirpc/cni.proto
 .PHONY: build
 build:
 	GOARCH=$(GOARCH) CGO_ENABLED=0 go build -o work/coil -ldflags="-s -w" cmd/coil/*.go
-	GOARCH=$(GOARCH) CGO_ENABLED=0 go build -o work/coil-controller -ldflags="-s -w" cmd/coil-controller/*.go
+	GOARCH=$(GOARCH) CGO_ENABLED=0 go build -o work/coil-ipam-controller -ldflags="-s -w" cmd/coil-ipam-controller/*.go
+	GOARCH=$(GOARCH) CGO_ENABLED=0 go build -o work/coil-egress-controller -ldflags="-s -w" cmd/coil-egress-controller/*.go
 	GOARCH=$(GOARCH) CGO_ENABLED=0 go build -o work/coil-egress -ldflags="-s -w" cmd/coil-egress/*.go
 	GOARCH=$(GOARCH) CGO_ENABLED=0 go build -o work/coil-installer -ldflags="-s -w" cmd/coil-installer/*.go
 	GOARCH=$(GOARCH) CGO_ENABLED=0 go build -o work/coil-router -ldflags="-s -w" cmd/coil-router/*.go

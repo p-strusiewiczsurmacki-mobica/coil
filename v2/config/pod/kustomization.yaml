@@ -1,3 +1,4 @@
 resources:
-- coil-controller.yaml
+- coil-ipam-controller.yaml
+- coil-egress-controller.yaml
 - coild.yaml
