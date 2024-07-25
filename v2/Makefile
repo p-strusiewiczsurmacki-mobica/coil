@@ -15,7 +15,8 @@ CONTROLLER_GEN := $(shell pwd)/bin/controller-gen
 SETUP_ENVTEST := $(shell pwd)/bin/setup-envtest
 YQ := $(shell pwd)/bin/yq
 CRD_OPTIONS = "crd:crdVersions=v1"
-ROLES = config/rbac/coil-controller_role.yaml \
+ROLES = config/rbac/coil-ipam-controller_role.yaml \
+	config/rbac/coil-egress-controller_role.yaml \
 	config/rbac/coild_role.yaml \
 	config/rbac/coil-router_role.yaml \
 	config/rbac/coil-egress_role.yaml
@@ -89,24 +90,31 @@ $(YQ):
 	rm -f yq.tar.gz
 	chmod +x $@
 
-COIL_CONTROLLER_ROLE_DEPENDS = controllers/addresspool_controller.go \
+COIL_IPAM_CONTROLLER_ROLE_DEPENDS = controllers/addresspool_controller.go \
 	controllers/blockrequest_controller.go \
-	controllers/egress_controller.go \
-	controllers/clusterrolebinding_controller.go \
 	pkg/ipam/pool.go \
 	runners/garbage_collector.go
 
-config/rbac/coil-controller_role.yaml: $(COIL_CONTROLLER_ROLE_DEPENDS)
+config/rbac/coil-ipam-controller_role.yaml: $(COIL_IPAM_CONTROLLER_ROLE_DEPENDS)
 	-rm -rf work
 	mkdir work
 	sed '0,/^package/s/.*/package work/' controllers/addresspool_controller.go > work/addresspool_controller.go
 	sed '0,/^package/s/.*/package work/' controllers/blockrequest_controller.go > work/blockrequest_controller.go
-	sed '0,/^package/s/.*/package work/' controllers/egress_controller.go > work/egress_controller.go
-	sed '0,/^package/s/.*/package work/' controllers/clusterrolebinding_controller.go > work/clusterrolebinding_controller.go
 	sed '0,/^package/s/.*/package work/' pkg/ipam/pool.go > work/pool.go
 	sed '0,/^package/s/.*/package work/' runners/garbage_collector.go > work/garbage_collector.go
-	$(CONTROLLER_GEN) rbac:roleName=coil-controller paths=./work output:stdout > $@
+	$(CONTROLLER_GEN) rbac:roleName=coil-ipam-controller paths=./work output:stdout > $@
 	rm -rf work
+
+COIL_EGRESS_CONTROLLER_ROLE_DEPENDS = controllers/egress_controller.go \
+	controllers/clusterrolebinding_controller.go
+
+config/rbac/coil-egress-controller_role.yaml: $(COIL_EGRESS_CONTROLLER_ROLE_DEPENDS)
+	-rm -rf work
+	mkdir work
+	sed '0,/^package/s/.*/package work/' controllers/egress_controller.go > work/egress_controller.go
+	sed '0,/^package/s/.*/package work/' controllers/clusterrolebinding_controller.go > work/clusterrolebinding_controller.go
+	$(CONTROLLER_GEN) rbac:roleName=coil-egress-controller paths=./work output:stdout > $@
+	# rm -rf work
 
 COILD_DEPENDS = controllers/blockrequest_watcher.go \
 	pkg/ipam/node.go \

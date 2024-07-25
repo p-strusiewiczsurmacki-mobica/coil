@@ -1,6 +1,7 @@
 resources:
 - serviceaccount.yaml
-- coil-controller_role.yaml
+- coil-ipam-controller_role.yaml
+- coil-egress-controller_role.yaml
 - coil-router_role.yaml
 - coild_role.yaml
 - coil-egress_role.yaml

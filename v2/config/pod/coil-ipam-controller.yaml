@@ -38,7 +38,7 @@ spec:
       securityContext:
         runAsUser: 10000
         runAsGroup: 10000
-      serviceAccountName: coil-controller
+      serviceAccountName: coil-ipam-controller
       terminationGracePeriodSeconds: 10
       containers:
       - name: coil-ipam-controller

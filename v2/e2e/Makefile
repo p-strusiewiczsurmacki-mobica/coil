@@ -29,7 +29,8 @@ install-coil:
 	$(KUBECTL) label nodes coil-worker2 test=coil
 	$(KIND) load docker-image --name coil coil:dev
 	$(KUSTOMIZE) build --load-restrictor=LoadRestrictionsNone . | $(KUBECTL) apply -f -
-	$(KUBECTL) -n kube-system wait --timeout=3m --for=condition=available deployment/coil-controller
+	$(KUBECTL) -n kube-system wait --timeout=3m --for=condition=available deployment/coil-ipam-controller
+	$(KUBECTL) -n kube-system wait --timeout=3m --for=condition=available deployment/coil-egress-controller
 
 .PHONY: test
 test:

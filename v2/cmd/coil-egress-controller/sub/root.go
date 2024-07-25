@@ -42,9 +42,9 @@ func Execute() {
 
 func init() {
 	pf := rootCmd.PersistentFlags()
-	pf.StringVar(&config.metricsAddr, "metrics-addr", ":9386", "bind address of metrics endpoint")
-	pf.StringVar(&config.healthAddr, "health-addr", ":9387", "bind address of health/readiness probes")
-	pf.StringVar(&config.webhookAddr, "webhook-addr", ":9443", "bind address of admission webhook")
+	pf.StringVar(&config.metricsAddr, "metrics-addr", ":9396", "bind address of metrics endpoint")
+	pf.StringVar(&config.healthAddr, "health-addr", ":9397", "bind address of health/readiness probes")
+	pf.StringVar(&config.webhookAddr, "webhook-addr", ":9444", "bind address of admission webhook")
 	pf.StringVar(&config.certDir, "cert-dir", "/certs", "directory to locate TLS certs for webhook")
 	pf.Int32Var(&config.egressPort, "egress-port", 5555, "UDP port number used by coil-egress")
 

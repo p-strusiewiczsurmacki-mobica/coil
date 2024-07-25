@@ -38,7 +38,7 @@ spec:
       securityContext:
         runAsUser: 10000
         runAsGroup: 10000
-      serviceAccountName: coil-controller
+      serviceAccountName: coil-egress-controller
       terminationGracePeriodSeconds: 10
       containers:
       - name: coil-egress-controller
@@ -57,13 +57,13 @@ spec:
               fieldPath: metadata.name
         ports:
         - name: metrics
-          containerPort: 9386
+          containerPort: 9396
           protocol: TCP
         - name: health
-          containerPort: 9387
+          containerPort: 9397
           protocol: TCP
         - name: webhook-server
-          containerPort: 9443
+          containerPort: 9444
           protocol: TCP
         resources:
           requests:

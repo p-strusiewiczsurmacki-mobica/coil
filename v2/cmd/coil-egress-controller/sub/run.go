@@ -11,7 +11,6 @@ import (
 	coilv2 "github.com/cybozu-go/coil/v2/api/v2"
 	"github.com/cybozu-go/coil/v2/controllers"
 	"github.com/cybozu-go/coil/v2/pkg/constants"
-	"github.com/cybozu-go/coil/v2/pkg/indexing"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -82,9 +81,6 @@ func subMain() error {
 	// register controllers
 
 	ctx := ctrl.SetupSignalHandler()
-	if err := indexing.SetupIndexForAddressBlock(ctx, mgr); err != nil {
-		return err
-	}
 
 	podNS := os.Getenv(constants.EnvPodNamespace)
 	podName := os.Getenv(constants.EnvPodName)
