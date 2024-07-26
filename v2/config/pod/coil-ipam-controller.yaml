@@ -87,4 +87,4 @@ spec:
       - name: cert
         secret:
           defaultMode: 420
-          secretName: coilv2-webhook-server-cert
+          secretName: coilv2-ipam-webhook-server-cert

@@ -11,9 +11,15 @@ generatorOptions:
   disableNameSuffixHash: true
 
 secretGenerator:
-- name: coilv2-webhook-server-cert
+- name: coilv2-ipam-webhook-server-cert
   files:
-  - ca.crt=./cert.pem
-  - tls.crt=./cert.pem
-  - tls.key=./key.pem
+  - ca.crt=./ipam-cert.pem
+  - tls.crt=./ipam-cert.pem
+  - tls.key=./ipam-key.pem
+  type: "kubernetes.io/tls"
+- name: coilv2-egress-webhook-server-cert
+  files:
+  - ca.crt=./egress-cert.pem
+  - tls.crt=./egress-cert.pem
+  - tls.key=./egress-key.pem
   type: "kubernetes.io/tls"

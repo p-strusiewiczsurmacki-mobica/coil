@@ -7,6 +7,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"flag"
+	"fmt"
 	"log"
 	"math/big"
 	"os"
@@ -16,37 +17,86 @@ import (
 )
 
 var (
-	host     = flag.String("host", "coilv2-webhook-service.kube-system.svc", "TLS hostname")
-	validFor = flag.Duration("duration", 36500*24*time.Hour, "Duration that certificate is valid for")
-	outDir   = flag.String("outdir", ".", "Directory where the certificate files are created")
+	host         = flag.String("host", "coilv2-webhook-service.kube-system.svc", "TLS hostname")
+	validFor     = flag.Duration("duration", 36500*24*time.Hour, "Duration that certificate is valid for")
+	outDir       = flag.String("outdir", ".", "Directory where the certificate files are created")
+	commonName   = flag.String("cn", "coilv2-webhook-service", "Certificate common name")
+	outCert      = flag.String("certname", "cert.pem", "Certificate filename")
+	outKey       = flag.String("keyname", "key.pem", "Key filename")
+	authority    = flag.String("ca", "", "Certificate authority")
+	authorityKey = flag.String("cakey", "", "Certificate authority")
 )
 
 func main() {
 	flag.Parse()
 
-	priv, err := rsa.GenerateKey(rand.Reader, 4096)
-	if err != nil {
-		log.Fatal(err)
+	var ca *x509.Certificate
+	var priv *rsa.PrivateKey
+	var err error
+	if *authority != "" {
+		r, err := os.ReadFile(filepath.Join(*outDir, *authority))
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		caData, _ := pem.Decode(r)
+
+		ca, err = x509.ParseCertificate(caData.Bytes)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		rk, err := os.ReadFile(filepath.Join(*outDir, *authorityKey))
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		cakData, _ := pem.Decode(rk)
+
+		k, err := x509.ParsePKCS8PrivateKey(cakData.Bytes)
+		if err != nil {
+			log.Fatal(err)
+		}
+		ka, ok := k.(*rsa.PrivateKey)
+		if !ok {
+			log.Fatal("error type assertion")
+		}
+		priv = ka
+	} else {
+		priv, err = rsa.GenerateKey(rand.Reader, 4096)
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 
 	keyUsage := x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment
 	notBefore := time.Now()
 	notAfter := notBefore.Add(*validFor)
 
+	isCA := (ca == nil)
+
+	fmt.Printf("isca: %t\n", isCA)
+
 	template := x509.Certificate{
 		SerialNumber: big.NewInt(1),
 		Subject: pkix.Name{
-			CommonName: "coilv2-webhook-service",
+			CommonName: *commonName,
 		},
 		NotBefore:             notBefore,
 		NotAfter:              notAfter,
 		KeyUsage:              keyUsage,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
+		IsCA:                  isCA,
 		DNSNames:              dnsAliases(*host),
 	}
 
-	certBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, priv.Public(), priv)
+	parent := ca
+	if isCA {
+		parent = &template
+	}
+
+	certBytes, err := x509.CreateCertificate(rand.Reader, &template, parent, priv.Public(), priv)
 	if err != nil {
 		log.Fatalf("failed to create certificate: %v", err)
 	}
@@ -68,8 +118,8 @@ func main() {
 		log.Fatalf("failed to marshal private key: %v", err)
 	}
 
-	outputPEM(filepath.Join(*outDir, "cert.pem"), "CERTIFICATE", certBytes)
-	outputPEM(filepath.Join(*outDir, "key.pem"), "PRIVATE KEY", privBytes)
+	outputPEM(filepath.Join(*outDir, *outCert), "CERTIFICATE", certBytes)
+	outputPEM(filepath.Join(*outDir, *outKey), "PRIVATE KEY", privBytes)
 }
 
 func dnsAliases(host string) []string {
