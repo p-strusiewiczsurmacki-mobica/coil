@@ -78,13 +78,15 @@ func subMain() error {
 
 	exporter := nodenet.NewRouteExporter(config.exportTableId, config.protocolId, ctrl.Log.WithName("route-exporter"))
 	nodeIPAM := ipam.NewNodeIPAM(nodeName, ctrl.Log.WithName("node-ipam"), mgr, exporter)
-	watcher := &controllers.BlockRequestWatcher{
-		Client:   mgr.GetClient(),
-		NodeIPAM: nodeIPAM,
-		NodeName: nodeName,
-	}
-	if err := watcher.SetupWithManager(mgr); err != nil {
-		return err
+	if config.enableIPAM {
+		watcher := &controllers.BlockRequestWatcher{
+			Client:   mgr.GetClient(),
+			NodeIPAM: nodeIPAM,
+			NodeName: nodeName,
+		}
+		if err := watcher.SetupWithManager(mgr); err != nil {
+			return err
+		}
 	}
 
 	ctx := context.Background()

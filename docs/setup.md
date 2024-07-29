@@ -37,7 +37,8 @@ This should generate the following PEM files:
 
 ```console
 $ ls config/default/*.pem
-config/default/cert.pem  config/default/key.pem
+config/default/cert.pem         config/default/egress-key.pem  config/default/ipam-key.pem
+config/default/egress-cert.pem  config/default/ipam-cert.pem   config/default/key.pem
 ```
 
 ## Edit `kustomization.yaml`
