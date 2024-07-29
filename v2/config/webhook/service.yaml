@@ -19,7 +19,7 @@ metadata:
   namespace: system
 spec:
   ports:
-    - port: 444
+    - port: 443
       targetPort: 9444
       protocol: TCP
   selector:

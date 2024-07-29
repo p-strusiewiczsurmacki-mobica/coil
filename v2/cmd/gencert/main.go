@@ -34,34 +34,9 @@ func main() {
 	var priv *rsa.PrivateKey
 	var err error
 	if *authority != "" {
-		r, err := os.ReadFile(filepath.Join(*outDir, *authority))
-		if err != nil {
+		if ca, priv, err = readCA(filepath.Join(*outDir, *authority), filepath.Join(*outDir, *authorityKey)); err != nil {
 			log.Fatal(err)
 		}
-
-		caData, _ := pem.Decode(r)
-
-		ca, err = x509.ParseCertificate(caData.Bytes)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		rk, err := os.ReadFile(filepath.Join(*outDir, *authorityKey))
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		cakData, _ := pem.Decode(rk)
-
-		k, err := x509.ParsePKCS8PrivateKey(cakData.Bytes)
-		if err != nil {
-			log.Fatal(err)
-		}
-		ka, ok := k.(*rsa.PrivateKey)
-		if !ok {
-			log.Fatal("error type assertion")
-		}
-		priv = ka
 	} else {
 		priv, err = rsa.GenerateKey(rand.Reader, 4096)
 		if err != nil {
@@ -69,13 +44,17 @@ func main() {
 		}
 	}
 
-	keyUsage := x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment
-	notBefore := time.Now()
-	notAfter := notBefore.Add(*validFor)
-
 	isCA := (ca == nil)
 
-	fmt.Printf("isca: %t\n", isCA)
+	keyUsage := x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment
+	extKeyUsage := []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
+	if isCA {
+		keyUsage = x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign
+		extKeyUsage = append(extKeyUsage, x509.ExtKeyUsageClientAuth)
+	}
+
+	notBefore := time.Now()
+	notAfter := notBefore.Add(*validFor)
 
 	template := x509.Certificate{
 		SerialNumber: big.NewInt(1),
@@ -85,7 +64,7 @@ func main() {
 		NotBefore:             notBefore,
 		NotAfter:              notAfter,
 		KeyUsage:              keyUsage,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		ExtKeyUsage:           extKeyUsage,
 		BasicConstraintsValid: true,
 		IsCA:                  isCA,
 		DNSNames:              dnsAliases(*host),
@@ -147,4 +126,36 @@ func outputPEM(fname string, pemType string, data []byte) {
 	if err != nil {
 		log.Fatalf("failed to fsync: %v", err)
 	}
+}
+
+func readCA(certPath, keyPath string) (*x509.Certificate, *rsa.PrivateKey, error) {
+	certFile, err := os.ReadFile(certPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("error reading file '%s': %w", certPath, err)
+	}
+
+	caData, _ := pem.Decode(certFile)
+
+	ca, err := x509.ParseCertificate(caData.Bytes)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	keyFile, err := os.ReadFile(keyPath)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	cakData, _ := pem.Decode(keyFile)
+	key, err := x509.ParsePKCS8PrivateKey(cakData.Bytes)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	privateKey, ok := key.(*rsa.PrivateKey)
+	if !ok {
+		return nil, nil, fmt.Errorf("type assertion error - object is not of type *rsa.PrivateKey")
+	}
+
+	return ca, privateKey, nil
 }
