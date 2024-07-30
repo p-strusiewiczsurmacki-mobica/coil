@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"strconv"
 
 	"github.com/containernetworking/cni/pkg/skel"
 	"github.com/containernetworking/cni/pkg/types"
+	current "github.com/containernetworking/cni/pkg/types/100"
 	"github.com/cybozu-go/coil/v2/pkg/cnirpc"
 	"github.com/cybozu-go/coil/v2/pkg/constants"
 	"google.golang.org/grpc"
@@ -23,8 +25,32 @@ func makeCNIArgs(args *skel.CmdArgs, conf *PluginConf) (*cnirpc.CNIArgs, error) 
 	}
 
 	argsData := env.Map()
-	argsData[constants.EnableIPAM] = strconv.FormatBool(conf.EnableIPAM)
-	argsData[constants.EnableEgress] = strconv.FormatBool(conf.EnableEgress)
+	ipamEnablad, exists := conf.Capabilities[ipamEnableKey]
+	if !exists {
+		ipamEnablad = true
+	}
+
+	egressEnabled, exists := conf.Capabilities[egressEnableKey]
+	if !exists {
+		egressEnabled = true
+	}
+
+	argsData[constants.EnableIPAM] = strconv.FormatBool(ipamEnablad)
+	argsData[constants.EnableEgress] = strconv.FormatBool(egressEnabled)
+
+	ips := ""
+	if conf.PrevResult != nil {
+		prevResult, err := current.GetResult(conf.PrevResult)
+		if err != nil {
+			return nil, fmt.Errorf("error getting previous CNI result: %w", err)
+		}
+		for i, ip := range prevResult.IPs {
+			ips += ip.Address.IP.String()
+			if i < len(prevResult.IPs)-1 {
+				ips += ","
+			}
+		}
+	}
 
 	cniArgs := &cnirpc.CNIArgs{
 		ContainerId: args.ContainerID,
@@ -33,6 +59,7 @@ func makeCNIArgs(args *skel.CmdArgs, conf *PluginConf) (*cnirpc.CNIArgs, error) 
 		Args:        argsData,
 		Path:        args.Path,
 		StdinData:   args.StdinData,
+		Ips:         ips,
 	}
 
 	return cniArgs, nil

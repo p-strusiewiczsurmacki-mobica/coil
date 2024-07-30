@@ -57,6 +57,7 @@ https://pkg.go.dev/github.com/containernetworking/cni@v0.8.0/pkg/skel?tab=doc#Cm
 | args | [CNIArgs.ArgsEntry](#pkg-cnirpc-CNIArgs-ArgsEntry) | repeated | Key-Value pairs parsed from CNI_ARGS |
 | path | [string](#string) |  |  |
 | stdin_data | [bytes](#bytes) |  |  |
+| ips | [string](#string) |  |  |
 
 
 

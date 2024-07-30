@@ -13,7 +13,11 @@ import (
 	"github.com/cybozu-go/coil/v2/pkg/cnirpc"
 )
 
-const rpcTimeout = 1 * time.Minute
+const (
+	rpcTimeout      = 1 * time.Minute
+	ipamEnableKey   = "ipam"
+	egressEnableKey = "egress"
+)
 
 func cmdAdd(args *skel.CmdArgs) error {
 	conf, err := parseConfig(args.StdinData)
@@ -21,7 +25,12 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return err
 	}
 
-	if conf.EnableIPAM && conf.PrevResult != nil {
+	ipamEnablad, exists := conf.Capabilities[ipamEnableKey]
+	if !exists {
+		ipamEnablad = true
+	}
+
+	if ipamEnablad && conf.PrevResult != nil {
 		return types.NewError(types.ErrInvalidNetworkConfig, "coil must be called as the first plugin when IPAM related features are enabled", "")
 	}
 
@@ -45,7 +54,13 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return convertError(err)
 	}
 
-	result, err := current.NewResult(resp.Result)
+	var result types.Result
+	if conf.PrevResult != nil {
+		result, err = current.NewResultFromResult(conf.PrevResult)
+	} else {
+		result, err = current.NewResult(resp.Result)
+	}
+
 	if err != nil {
 		return types.NewError(types.ErrDecodingFailure, "failed to unmarshal result", err.Error())
 	}

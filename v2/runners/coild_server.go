@@ -216,7 +216,15 @@ func (s *coildServer) Add(ctx context.Context, args *cnirpc.CNIArgs) (*cnirpc.Ad
 			return nil, newInternalError(err, "failed to allocate address")
 		}
 	} else {
-		ipv4, ipv6 = getPodIPs(pod)
+		logger.Sugar().Info("ips:", args.Ips)
+		ipv4, ipv6 = getPodIPs(args.Ips)
+	}
+
+	if ipv4 != nil {
+		logger.Sugar().Infof("ipv4: %s", ipv4.String())
+	}
+	if ipv6 != nil {
+		logger.Sugar().Infof("ipv6: %s", ipv6.String())
 	}
 
 	result := &current.Result{
@@ -273,15 +281,15 @@ func (s *coildServer) Add(ctx context.Context, args *cnirpc.CNIArgs) (*cnirpc.Ad
 	return &cnirpc.AddResponse{Result: data}, nil
 }
 
-func getPodIPs(pod *corev1.Pod) (net.IP, net.IP) {
+func getPodIPs(ips string) (net.IP, net.IP) {
 	var ipv4, ipv6 net.IP
-	for _, ip := range pod.Status.PodIPs {
-		addr := net.ParseIP(ip.IP)
+	podIPs := strings.Split(ips, ",")
+	for _, ip := range podIPs {
+		addr := net.ParseIP(ip)
 		if addr != nil {
 			if ipv4 == nil && addr.To4() != nil {
 				ipv4 = addr
-			}
-			if ipv6 == nil && addr.To16() != nil {
+			} else if ipv6 == nil {
 				ipv6 = addr
 			}
 		}
