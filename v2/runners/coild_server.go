@@ -19,6 +19,7 @@ import (
 	"github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors"
 	"github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/logging"
 	grpc_prometheus "github.com/grpc-ecosystem/go-grpc-prometheus"
+	"github.com/vishvananda/netlink"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -216,15 +217,7 @@ func (s *coildServer) Add(ctx context.Context, args *cnirpc.CNIArgs) (*cnirpc.Ad
 			return nil, newInternalError(err, "failed to allocate address")
 		}
 	} else {
-		logger.Sugar().Info("ips:", args.Ips)
 		ipv4, ipv6 = getPodIPs(args.Ips)
-	}
-
-	if ipv4 != nil {
-		logger.Sugar().Infof("ipv4: %s", ipv4.String())
-	}
-	if ipv6 != nil {
-		logger.Sugar().Infof("ipv6: %s", ipv6.String())
 	}
 
 	result := &current.Result{
@@ -251,6 +244,13 @@ func (s *coildServer) Add(ctx context.Context, args *cnirpc.CNIArgs) (*cnirpc.Ad
 	}
 
 	if egressEnabled {
+		if !ipamEnabled {
+			logger.Sugar().Errorw("failed to set interface alias", "error", err)
+			if err := setCoilInterfaceAlias(args.Interfaces, config, logger, pod); err != nil {
+				return nil, newInternalError(err, "failed to set interface alias")
+			}
+		}
+
 		hook, err := s.getHook(ctx, pod)
 		if err != nil {
 			logger.Sugar().Errorw("failed to setup NAT hook", "error", err)
@@ -279,6 +279,28 @@ func (s *coildServer) Add(ctx context.Context, args *cnirpc.CNIArgs) (*cnirpc.Ad
 		return nil, newInternalError(err, "failed to marshal the result")
 	}
 	return &cnirpc.AddResponse{Result: data}, nil
+}
+
+func setCoilInterfaceAlias(interfaces map[string]bool, conf *nodenet.PodNetConf, logger *zap.Logger, pod *corev1.Pod) error {
+	ifName := ""
+	for name, isSandbox := range interfaces {
+		if !isSandbox {
+			ifName = name
+			break
+		}
+	}
+	logger.Sugar().Infof("interface selected: %s", ifName)
+	hLink, err := netlink.LinkByName(ifName)
+	if err != nil {
+		return fmt.Errorf("netlink: failed to look up the host-side veth: %w", err)
+	}
+	logger.Sugar().Infof("link found: %v", hLink)
+
+	// give identifer as an alias of host veth
+	if err := netlink.LinkSetAlias(hLink, nodenet.GenAlias(conf, string(pod.UID))); err != nil {
+		return fmt.Errorf("netlink: failed to set alias: %w", err)
+	}
+	return nil
 }
 
 func getPodIPs(ips string) (net.IP, net.IP) {
@@ -417,6 +439,7 @@ func (s *coildServer) getHook(ctx context.Context, pod *corev1.Pod) (nodenet.Set
 
 	if len(gwlist) > 0 {
 		logger = logger.With(zap.String("pod_name", pod.Name), zap.String("pod_namespace", pod.Namespace))
+		logger.Sugar().Infof("gwlist: %v", gwlist)
 		return s.natSetup.Hook(gwlist, logger), nil
 	}
 	return nil, nil

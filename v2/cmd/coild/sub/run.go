@@ -103,7 +103,8 @@ func subMain() error {
 		ipv6,
 		config.compatCalico,
 		config.registerFromMain,
-		ctrl.Log.WithName("pod-network"))
+		ctrl.Log.WithName("pod-network"),
+		config.enableIPAM)
 	if err := podNet.Init(); err != nil {
 		return err
 	}
@@ -140,6 +141,7 @@ func subMain() error {
 			NodeName:   nodeName,
 			PodNet:     podNet,
 			EgressPort: config.egressPort,
+			Logger:     ctrl.Log.WithName("egress-watcher"),
 		}
 		if err := egressWatcher.SetupWithManager(mgr); err != nil {
 			return err

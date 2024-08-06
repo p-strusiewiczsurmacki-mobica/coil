@@ -114,7 +114,7 @@ func (p *mockPodNetwork) SetupEgress(nsPath string, conf *nodenet.PodNetConf, ho
 	return nil
 }
 
-func (p *mockPodNetwork) Update(podIPv4, podIPv6 net.IP, hook nodenet.SetupHook) error {
+func (p *mockPodNetwork) Update(podIPv4, podIPv6 net.IP, hook nodenet.SetupHook, pod *corev1.Pod) error {
 	panic("not implemented")
 }
 
@@ -267,6 +267,8 @@ var _ = Describe("Coild server", func() {
 		err = json.Unmarshal(data.Result, result)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result.IPs).To(HaveLen(2))
+
+		By(logbuf.String())
 
 		By("checking custom tags in gRPC log")
 		// Expecting JSON output like:

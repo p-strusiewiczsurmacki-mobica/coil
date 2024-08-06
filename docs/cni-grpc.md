@@ -7,6 +7,7 @@
     - [AddResponse](#pkg-cnirpc-AddResponse)
     - [CNIArgs](#pkg-cnirpc-CNIArgs)
     - [CNIArgs.ArgsEntry](#pkg-cnirpc-CNIArgs-ArgsEntry)
+    - [CNIArgs.InterfacesEntry](#pkg-cnirpc-CNIArgs-InterfacesEntry)
     - [CNIError](#pkg-cnirpc-CNIError)
   
     - [ErrorCode](#pkg-cnirpc-ErrorCode)
@@ -58,6 +59,7 @@ https://pkg.go.dev/github.com/containernetworking/cni@v0.8.0/pkg/skel?tab=doc#Cm
 | path | [string](#string) |  |  |
 | stdin_data | [bytes](#bytes) |  |  |
 | ips | [string](#string) |  |  |
+| interfaces | [CNIArgs.InterfacesEntry](#pkg-cnirpc-CNIArgs-InterfacesEntry) | repeated |  |
 
 
 
@@ -74,6 +76,22 @@ https://pkg.go.dev/github.com/containernetworking/cni@v0.8.0/pkg/skel?tab=doc#Cm
 | ----- | ---- | ----- | ----------- |
 | key | [string](#string) |  |  |
 | value | [string](#string) |  |  |
+
+
+
+
+
+
+<a name="pkg-cnirpc-CNIArgs-InterfacesEntry"></a>
+
+### CNIArgs.InterfacesEntry
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| key | [string](#string) |  |  |
+| value | [bool](#bool) |  |  |
 
 
 

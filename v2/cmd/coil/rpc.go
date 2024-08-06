@@ -39,6 +39,7 @@ func makeCNIArgs(args *skel.CmdArgs, conf *PluginConf) (*cnirpc.CNIArgs, error) 
 	argsData[constants.EnableEgress] = strconv.FormatBool(egressEnabled)
 
 	ips := ""
+	interfaces := map[string]bool{}
 	if conf.PrevResult != nil {
 		prevResult, err := current.GetResult(conf.PrevResult)
 		if err != nil {
@@ -50,6 +51,9 @@ func makeCNIArgs(args *skel.CmdArgs, conf *PluginConf) (*cnirpc.CNIArgs, error) 
 				ips += ","
 			}
 		}
+		for _, intf := range prevResult.Interfaces {
+			interfaces[intf.Name] = intf.Sandbox != ""
+		}
 	}
 
 	cniArgs := &cnirpc.CNIArgs{
@@ -60,6 +64,7 @@ func makeCNIArgs(args *skel.CmdArgs, conf *PluginConf) (*cnirpc.CNIArgs, error) 
 		Path:        args.Path,
 		StdinData:   args.StdinData,
 		Ips:         ips,
+		Interfaces:  interfaces,
 	}
 
 	return cniArgs, nil

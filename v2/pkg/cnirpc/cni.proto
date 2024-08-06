@@ -15,6 +15,7 @@ message CNIArgs {
   string path = 5;
   bytes stdin_data = 6;
   string ips = 7;
+  map<string,bool> interfaces = 8;
 }
 
 // ErrorCode enumerates errors for CNIError

@@ -21,6 +21,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
+	corev1 "k8s.io/api/core/v1"
 )
 
 var (
@@ -60,7 +61,7 @@ type PodNetwork interface {
 
 	// Update updates the container network configuration
 	// Currently, it only updates configuration using a SetupHook, e.g. NAT setting
-	Update(podIPv4, podIPv6 net.IP, hook SetupHook) error
+	Update(podIPv4, podIPv6 net.IP, hook SetupHook, pod *corev1.Pod) error
 
 	// Check checks the pod network's status.
 	Check(containerId, iface string) error
@@ -74,7 +75,7 @@ type PodNetwork interface {
 }
 
 // NewPodNetwork creates a PodNetwork
-func NewPodNetwork(podTableID, podRulePrio, protocolId int, hostIPv4, hostIPv6 net.IP, compatCalico, registerFromMain bool, log logr.Logger) PodNetwork {
+func NewPodNetwork(podTableID, podRulePrio, protocolId int, hostIPv4, hostIPv6 net.IP, compatCalico, registerFromMain bool, log logr.Logger, enableIPAM bool) PodNetwork {
 	return &podNetwork{
 		podTableId:       podTableID,
 		podRulePrio:      podRulePrio,
@@ -84,6 +85,7 @@ func NewPodNetwork(podTableID, podRulePrio, protocolId int, hostIPv4, hostIPv6 n
 		compatCalico:     compatCalico,
 		registerFromMain: registerFromMain,
 		log:              log,
+		enableIPAM:       enableIPAM,
 	}
 }
 
@@ -97,12 +99,13 @@ type podNetwork struct {
 	compatCalico     bool
 	registerFromMain bool
 	log              logr.Logger
+	enableIPAM       bool
 
 	mu sync.Mutex
 }
 
-func genAlias(conf *PodNetConf) string {
-	return fmt.Sprintf("COIL:%s:%s:%s", conf.PoolName, conf.ContainerId, conf.IFace)
+func GenAlias(conf *PodNetConf, id string) string {
+	return fmt.Sprintf("COIL:%s:%s:%s", conf.PoolName, id, conf.IFace)
 }
 
 func parseLink(l netlink.Link) *PodNetConf {
@@ -307,7 +310,7 @@ func (pn *podNetwork) SetupIPAM(nsPath, podName, podNS string, conf *PodNetConf)
 	}()
 
 	// give identifer as an alias of host veth
-	err = netlink.LinkSetAlias(hLink, genAlias(conf))
+	err = netlink.LinkSetAlias(hLink, GenAlias(conf, conf.ContainerId))
 	if err != nil {
 		return nil, fmt.Errorf("netlink: failed to set alias: %w", err)
 	}
@@ -440,7 +443,7 @@ func (pn *podNetwork) SetupEgress(nsPath string, conf *PodNetConf, hook SetupHoo
 	return nil
 }
 
-func (pn *podNetwork) Update(podIPv4, podIPv6 net.IP, hook SetupHook) error {
+func (pn *podNetwork) Update(podIPv4, podIPv6 net.IP, hook SetupHook, pod *corev1.Pod) error {
 	pn.mu.Lock()
 	defer pn.mu.Unlock()
 
@@ -451,12 +454,21 @@ func (pn *podNetwork) Update(podIPv4, podIPv6 net.IP, hook SetupHook) error {
 
 	var netNsPath string
 	for _, c := range podConfigs {
-		// When both c.IPvX and podIPvX are nil, net.IP.Equal() returns always true.
-		// To avoid comparing nil to nil, confirm c.IPvX is not nil.
-		if (c.IPv4 != nil && c.IPv4.Equal(podIPv4)) || (c.IPv6 != nil && c.IPv6.Equal(podIPv6)) {
-			netNsPath, err = getNetNsPath(c.HostVethName)
-			if err != nil {
-				return err
+		if pn.enableIPAM {
+			// When both c.IPvX and podIPvX are nil, net.IP.Equal() returns always true.
+			// To avoid comparing nil to nil, confirm c.IPvX is not nil.
+			if (c.IPv4 != nil && c.IPv4.Equal(podIPv4)) || (c.IPv6 != nil && c.IPv6.Equal(podIPv6)) {
+				netNsPath, err = getNetNsPath(c.HostVethName)
+				if err != nil {
+					return err
+				}
+			}
+		} else {
+			if c.ContainerId == string(pod.UID) {
+				netNsPath, err = getNetNsPath(c.HostVethName)
+				if err != nil {
+					return err
+				}
 			}
 		}
 	}

@@ -188,7 +188,7 @@ func (p *mockPodNetwork) SetupEgress(nsPath string, conf *nodenet.PodNetConf, ho
 	panic("not implemented")
 }
 
-func (p *mockPodNetwork) Update(podIPv4, podIPv6 net.IP, hook nodenet.SetupHook) error {
+func (p *mockPodNetwork) Update(podIPv4, podIPv6 net.IP, hook nodenet.SetupHook, pod *corev1.Pod) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 

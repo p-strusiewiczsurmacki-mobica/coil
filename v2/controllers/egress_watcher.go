@@ -24,6 +24,7 @@ type EgressWatcher struct {
 	NodeName   string
 	PodNet     nodenet.PodNetwork
 	EgressPort int
+	Logger     logr.Logger
 }
 
 // +kubebuilder:rbac:groups=coil.cybozu.com,resources=egresses,verbs=get;list;watch
@@ -125,7 +126,7 @@ func (r *EgressWatcher) reconcileEgressClient(ctx context.Context, eg *coilv2.Eg
 			ipv6 = ip.To16()
 		}
 	}
-	if err := r.PodNet.Update(ipv4, ipv6, hook); err != nil {
+	if err := r.PodNet.Update(ipv4, ipv6, hook, pod); err != nil {
 		return fmt.Errorf("failed to update NAT configuration: %w", err)
 	}
 
