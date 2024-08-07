@@ -245,7 +245,6 @@ func (s *coildServer) Add(ctx context.Context, args *cnirpc.CNIArgs) (*cnirpc.Ad
 
 	if egressEnabled {
 		if !ipamEnabled {
-			logger.Sugar().Errorw("failed to set interface alias", "error", err)
 			if err := setCoilInterfaceAlias(args.Interfaces, config, logger, pod); err != nil {
 				return nil, newInternalError(err, "failed to set interface alias")
 			}
