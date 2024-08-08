@@ -262,7 +262,7 @@ To deploy Coil with only egress feature enabled the following changes are requir
           - --zap-stacktrace-level=panic
           - --enable-ipam=false
           - --enable-egress=true
-          - --pod-table-id=0
+          - --pod-table-id=0 # 255 if IPv6 is being used
           - --protocol-id=2
     ```
 4. Set coil capabilites in `v2/netconf.json` to:
