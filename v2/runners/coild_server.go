@@ -173,22 +173,8 @@ func newInternalError(err error, msg string) error {
 func (s *coildServer) Add(ctx context.Context, args *cnirpc.CNIArgs) (*cnirpc.AddResponse, error) {
 	logger := withCtxFields(ctx, s.logger)
 
-	podName := args.Args[constants.PodNameKey]
-	podNS := args.Args[constants.PodNamespaceKey]
-	if podName == "" || podNS == "" {
-		logger.Sugar().Errorw("missing pod name/namespace", "args", args.Args)
-		return nil, newError(codes.InvalidArgument, cnirpc.ErrorCode_INVALID_ENVIRONMENT_VARIABLES,
-			"missing pod name/namespace", fmt.Sprintf("%+v", args.Args))
-	}
-
-	// TODO: pod will be used for selective NAT feature
-	pod := &corev1.Pod{}
-	if err := s.apiReader.Get(ctx, client.ObjectKey{Namespace: podNS, Name: podName}, pod); err != nil {
-		if apierrors.IsNotFound(err) {
-			logger.Sugar().Errorw("pod not found", "name", podName, "namespace", podNS)
-			return nil, newError(codes.NotFound, cnirpc.ErrorCode_UNKNOWN_CONTAINER, "pod not found", err.Error())
-		}
-		logger.Sugar().Errorw("failed to get pod", "name", podName, "namespace", podNS, "error", err)
+	pod, err := s.getPodFromArgs(ctx, args, logger)
+	if err != nil {
 		return nil, newInternalError(err, "failed to get pod")
 	}
 
@@ -206,8 +192,8 @@ func (s *coildServer) Add(ctx context.Context, args *cnirpc.CNIArgs) (*cnirpc.Ad
 
 	if ipamEnabled {
 		ns := &corev1.Namespace{}
-		if err := s.client.Get(ctx, client.ObjectKey{Name: podNS}, ns); err != nil {
-			logger.Sugar().Errorw("failed to get namespace", "name", podNS, "error", err)
+		if err := s.client.Get(ctx, client.ObjectKey{Name: pod.Namespace}, ns); err != nil {
+			logger.Sugar().Errorw("failed to get namespace", "name", pod.Namespace, "error", err)
 			return nil, newInternalError(err, "failed to get namespace")
 		}
 		poolName = constants.DefaultPool
@@ -237,7 +223,7 @@ func (s *coildServer) Add(ctx context.Context, args *cnirpc.CNIArgs) (*cnirpc.Ad
 	}
 
 	if ipamEnabled {
-		result, err = s.podNet.SetupIPAM(args.Netns, podName, podNS, config)
+		result, err = s.podNet.SetupIPAM(args.Netns, pod.Name, pod.Namespace, config)
 		if err != nil {
 			if err := s.nodeIPAM.Free(ctx, args.ContainerId, args.Ifname); err != nil {
 				logger.Sugar().Warnw("failed to deallocate address", "error", err)
@@ -349,7 +335,7 @@ func (s *coildServer) Del(ctx context.Context, args *cnirpc.CNIArgs) (*emptypb.E
 func (s *coildServer) Check(ctx context.Context, args *cnirpc.CNIArgs) (*emptypb.Empty, error) {
 	logger := withCtxFields(ctx, s.logger)
 
-	ipamEnabled, _, err := getSettings(args)
+	ipamEnabled, egressEnabled, err := getSettings(args)
 	if err != nil {
 		return nil, newInternalError(err, "check failed")
 	}
@@ -359,9 +345,42 @@ func (s *coildServer) Check(ctx context.Context, args *cnirpc.CNIArgs) (*emptypb
 			logger.Sugar().Errorw("check failed", "error", err)
 			return nil, newInternalError(err, "check failed")
 		}
+	} else if egressEnabled {
+		pod, err := s.getPodFromArgs(ctx, args, logger)
+		if err != nil {
+			return nil, newInternalError(err, "unable to get pod")
+		}
+
+		if err := s.podNet.Check(string(pod.UID), args.Ifname); err != nil {
+			logger.Sugar().Errorw("check failed", "error", err)
+			return nil, newInternalError(err, "check failed")
+		}
 	}
 
 	return &emptypb.Empty{}, nil
+}
+
+func (s *coildServer) getPodFromArgs(ctx context.Context, args *cnirpc.CNIArgs, logger *zap.Logger) (*corev1.Pod, error) {
+	podName := args.Args[constants.PodNameKey]
+	podNS := args.Args[constants.PodNamespaceKey]
+	if podName == "" || podNS == "" {
+		logger.Sugar().Errorw("missing pod name/namespace", "args", args.Args)
+		return nil, newError(codes.InvalidArgument, cnirpc.ErrorCode_INVALID_ENVIRONMENT_VARIABLES,
+			"missing pod name/namespace", fmt.Sprintf("%+v", args.Args))
+	}
+
+	// TODO: pod will be used for selective NAT feature
+	pod := &corev1.Pod{}
+	if err := s.apiReader.Get(ctx, client.ObjectKey{Namespace: podNS, Name: podName}, pod); err != nil {
+		if apierrors.IsNotFound(err) {
+			logger.Sugar().Errorw("pod not found", "name", podName, "namespace", podNS)
+			return nil, newError(codes.NotFound, cnirpc.ErrorCode_UNKNOWN_CONTAINER, "pod not found", err.Error())
+		}
+		logger.Sugar().Errorw("failed to get pod", "name", podName, "namespace", podNS, "error", err)
+		return nil, newInternalError(err, "failed to get pod")
+	}
+
+	return pod, nil
 }
 
 func (s *coildServer) getHook(ctx context.Context, pod *corev1.Pod) (nodenet.SetupHook, error) {
