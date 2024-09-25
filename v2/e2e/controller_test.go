@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"bytes"
+	"fmt"
 
 	coilv2 "github.com/cybozu-go/coil/v2/api/v2"
 	. "github.com/onsi/ginkgo/v2"
@@ -62,7 +63,8 @@ var _ = Describe("coil-egress-controller", func() {
 		Expect(pods.Items).Should(HaveLen(2))
 
 		node := pods.Items[0].Spec.NodeName
-		out, err := runOnNode(node, "curl", "-sf", "http://localhost:9396/metrics")
+
+		out, err := runOnNode(node, "curl", "-sf", fmt.Sprintf("http://%s:9396/metrics", pods.Items[0].Status.PodIP))
 		Expect(err).ShouldNot(HaveOccurred())
 
 		mfs, err := (&expfmt.TextParser{}).TextToMetricFamilies(bytes.NewReader(out))
