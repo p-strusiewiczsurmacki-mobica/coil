@@ -251,8 +251,8 @@ To deploy Coil with only egress feature enabled the following changes are requir
     - `v2/config/pod/kustomization.yaml`
     - `v2/config/rbac/kustomization.yaml`
 
-2. Comment unnecessary resources in `config/crd/patches/remove_status.yaml`.
-3. Add following arguments to the `coild` contianer executable in `config/pod/coild.yaml`
+1. Comment unnecessary resources in `config/crd/patches/remove_status.yaml`.
+1. Add following arguments to the `coild` contianer executable in `config/pod/coild.yaml`
     ```yaml
     containers:
       - name: coild
@@ -265,7 +265,13 @@ To deploy Coil with only egress feature enabled the following changes are requir
           - --pod-table-id=0 # 255 if IPv6 is being used
           - --protocol-id=2
     ```
-4. Set coil capabilites in `v2/netconf.json` to:
+1. Set CNI config filename using environment variable for init contianer `coil-installer` in `config/pod/coild.yaml`:
+    ```yaml
+    env:
+    - name: CNI_CONF_NAME
+      value: "01-coil.conflist"
+    ```
+1. Set coil capabilites in `v2/netconf.json` to:
     ```json
     {
       "type": "coil",
@@ -276,5 +282,38 @@ To deploy Coil with only egress feature enabled the following changes are requir
       }
     },
     ```
-5. Add configuration of your chosen CNI to `v2/netconf.json` before `coil` related configuration.
-6. Deploy `coil` to existing cluster as described in [Compile and apply the manifest](#compile-and-apply-the-manifest).
+1. Add configuration of your chosen CNI to `v2/netconf.json` before `coil` related configuration.
+1. Deploy `coil` to existing cluster as described in [Compile and apply the manifest](#compile-and-apply-the-manifest).
+
+### Testing standalone egress
+
+1. Configure Coil to run in standalone egress mode as described in [configuration](#configuration)
+1. Set proper CNI netconf to use in `e2e/kustomization.yaml`.
+    ```yaml
+    configMapGenerator:
+    - name: coil-config
+      namespace: system
+      files:
+      - cni_netconf=netconf/netconf-kindnet-v4.json
+    ```
+1. Comment redundant parts of `e2e/kustomization.yaml`.
+    ```yaml
+    resources:
+    - ../config/default
+    # - ../config/pod/coil-router.yaml
+
+    # patchesStrategicMerge:
+    # - coil-controller_patch.yaml
+    ```
+1. Start kind cluster with kindnet.
+    ```bash
+    TEST_IPAM=false TEST_EGRESS=true make start
+    ```
+1. Install Coil on kind cluster.
+    ```bash
+    make install-coil-egress
+    ```
+1. Start tests.
+    ```bash
+    TEST_IPAM=false TEST_EGRESS=true make test
+    ```

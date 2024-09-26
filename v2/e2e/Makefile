@@ -10,7 +10,15 @@ export KUBECTL
 
 KIND_CONFIG = kind-config.yaml
 ifeq ($(TEST_IPV6),true)
-KIND_CONFIG = kind-config_v6.yaml
+	ifeq ($(TEST_IPAM),true)
+		KIND_CONFIG = kind-config_v6.yaml
+	else 
+		KIND_CONFIG = kind-config_kindnet_v6.yaml
+	endif
+else
+	ifeq ($(TEST_IPAM),false)
+		KIND_CONFIG = kind-config_kindnet.yaml
+	endif
 endif
 
 .PHONY: start
@@ -32,12 +40,41 @@ install-coil:
 	$(KUBECTL) -n kube-system wait --timeout=3m --for=condition=available deployment/coil-ipam-controller
 	$(KUBECTL) -n kube-system wait --timeout=3m --for=condition=available deployment/coil-egress-controller
 
+.PHONY: install-coil-egress
+install-coil-egress:
+	rm -rf tmp
+	mkdir tmp 2> /dev/null
+	CGO_ENABLED=0 go build -o  kindnet-conf ./kindnet-configurer
+	./kindnet-conf get 10-kindnet.conflist
+	$(KUBECTL) taint nodes coil-worker test:NoSchedule
+	$(KUBECTL) taint nodes coil-worker2 test:NoSchedule
+	$(KUBECTL) label nodes coil-worker test=coil
+	$(KUBECTL) label nodes coil-worker2 test=coil
+	$(KIND) load docker-image --name coil coil:dev
+	$(KUSTOMIZE) build --load-restrictor=LoadRestrictionsNone . | $(KUBECTL) apply -f -
+	$(KUBECTL) -n kube-system wait --timeout=3m --for=condition=available deployment/coil-egress-controller
+	$(KUBECTL) -n kube-system wait --timeout=3m --for=condition=available deployment/coil-egress-controller
+	$(KUBECTL) rollout status daemonset coild -n kube-system --timeout=3m
+	./kindnet-conf set 10-coil.conflist
+	rm -rf tmp kindnet-conf
+
 .PHONY: test
-test:
+test: setup-echotest
+	TEST_IPAM=$(TEST_IPAM) TEST_EGRESS=$(TEST_EGRESS) go test -count 1 -v . -args -ginkgo.progress -ginkgo.v
+
+.PHONY: test-ipam
+test-ipam: setup-echotest
+	TEST_IPAM=$(TEST_IPAM) TEST_EGRESS=$(TEST_EGRESS) go test -count 1 -v . -args -ginkgo.progress -ginkgo.v
+
+.PHONY: test-egress
+test-egress: setup-echotest
+	TEST_IPAM=$(TEST_IPAM) TEST_EGRESS=$(TEST_EGRESS) go test -count 1 -v . -args -ginkgo.progress -ginkgo.v
+
+.PHONY: setup-echotest
+setup-echotest:
 	CGO_ENABLED=0 go build -o echotest ./echo-server
 	docker cp echotest coil-control-plane:/usr/local/bin
 	rm echotest
-	go test -count 1 -v . -args -ginkgo.progress -ginkgo.v
 
 .PHONY: logs
 logs:
