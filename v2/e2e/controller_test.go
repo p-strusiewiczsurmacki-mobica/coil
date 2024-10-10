@@ -77,7 +77,12 @@ var _ = Describe("coil-egress-controllerr", func() {
 
 				node := pods.Items[0].Spec.NodeName
 
-				out, err := runOnNode(node, "curl", "-sf", fmt.Sprintf("http://%s:9396/metrics", pods.Items[0].Status.PodIP))
+				address := fmt.Sprintf("http://%s:9396/metrics", pods.Items[0].Status.PodIP)
+				if testIPv6 {
+					address = fmt.Sprintf("http://[%s]:9396/metrics", pods.Items[0].Status.PodIP)
+				}
+
+				out, err := runOnNode(node, "curl", "-sf", address)
 				Expect(err).ShouldNot(HaveOccurred())
 
 				mfs, err := (&expfmt.TextParser{}).TextToMetricFamilies(bytes.NewReader(out))

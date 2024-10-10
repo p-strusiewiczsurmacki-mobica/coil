@@ -287,33 +287,89 @@ To deploy Coil with only egress feature enabled the following changes are requir
 
 ### Testing standalone egress
 
-1. Configure Coil to run in standalone egress mode as described in [configuration](#configuration)
-1. Set proper CNI netconf to use in `e2e/kustomization.yaml`.
-    ```yaml
-    configMapGenerator:
-    - name: coil-config
-      namespace: system
-      files:
-      - cni_netconf=netconf/netconf-kindnet-v4.json
+#### Testing with Kindnet using IPv4
+1. Generate certificates using `v2/Makefile`.
+    ```bash
+    cd v2 && make certs
     ```
-1. Comment redundant parts of `e2e/kustomization.yaml`.
-    ```yaml
-    resources:
-    - ../config/default
-    # - ../config/pod/coil-router.yaml
+1. Go to `v2/e2e`
+    ```bash
+    cd e2e
+    ```
+1. Create IPv4 based Kind cluster with Kindnet CNI deployed:
+    ```bash
+    WITH_KINDNET=true TEST_IPV6=false make start
+    ```
+1. Install Coil on the cluster:
+    ```bash
+    make install-coil-egress-kindnet-v4
+    ```
+1. Run egress-only IPv4 tests:
+    ```bash
+    TEST_IPAM=false TEST_EGRESS=true TEST_IPV6=false make test
+    ```
 
-    # patchesStrategicMerge:
-    # - coil-controller_patch.yaml
-    ```
-1. Start kind cluster with kindnet.
+#### Testing with Kindnet using IPv6
+1. Generate certificates using `v2/Makefile`.
     ```bash
-    TEST_IPAM=false TEST_EGRESS=true make start
+    cd v2 && make certs
     ```
-1. Install Coil on kind cluster.
+1. Go to `v2/e2e`
     ```bash
-    make install-coil-egress
+    cd e2e
     ```
-1. Start tests.
+1. Create IPv6 based Kind cluster with Kindnet CNI deployed:
     ```bash
-    TEST_IPAM=false TEST_EGRESS=true make test
+    WITH_KINDNET=true TEST_IPV6=true make start
     ```
+1. Install Coil on the cluster:
+    ```bash
+    make install-coil-egress-kindnet-v6
+    ```
+1. Run egress-only IPv6 tests:
+    ```bash
+    TEST_IPAM=false TEST_EGRESS=true TEST_IPV6=true make test
+    ```
+
+#### Testing with Calico using IPv4
+1. Generate certificates using `v2/Makefile`.
+    ```bash
+    cd v2 && make certs
+    ```
+1. Go to `v2/e2e`
+    ```bash
+    cd e2e
+    ```
+1. Create IPv4 based Kind cluster with no default CNI:
+    ```bash
+    WITH_KINDNET=false TEST_IPV6=false make start
+    ```
+1. Install Coil and Calico on the cluster:
+    ```bash
+    make install-coil-egress-calico-v4
+    ```
+1. Run egress-only IPv4 tests:
+    ```bash
+    TEST_IPAM=false TEST_EGRESS=true TEST_IPV6=false make test
+    ```
+
+#### Testing with Calico using IPv6
+1. Generate certificates using `v2/Makefile`.
+    ```bash
+    cd v2 && make certs
+    ```
+1. Go to `v2/e2e`
+    ```bash
+    cd e2e
+    ```
+1. Create IPv6 based Kind cluster with no default CNI:
+    ```bash
+    WITH_KINDNET=false TEST_IPV6=true make start
+    ```
+1. Install Coil and Calico on the cluster:
+    ```bash
+    make install-coil-egress-calico-v6
+    ```
+1. Run egress-only IPv6 tests:
+    ```bash
+    TEST_IPAM=false TEST_EGRESS=true TEST_IPV6=true make test

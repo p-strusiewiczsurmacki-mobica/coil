@@ -14,7 +14,7 @@
         "type":"calico-ipam"
       },
       "kubernetes": {
-        "k8s_api_root":"https://10.96.0.1:443",
+        "k8s_api_root":"https://[fd00:10:96::1]:443",
         "kubeconfig":"/etc/cni/net.d/calico-kubeconfig"
       },
       "log_file_max_age":30,
