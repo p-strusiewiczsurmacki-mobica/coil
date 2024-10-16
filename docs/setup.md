@@ -302,7 +302,7 @@ To deploy Coil with only egress feature enabled the following changes are requir
     ```
 1. Install Coil on the cluster:
     ```bash
-    make install-coil-egress-kindnet-v4
+    make install-coil-egress-v4
     ```
 1. Run egress-only IPv4 tests:
     ```bash
@@ -324,52 +324,9 @@ To deploy Coil with only egress feature enabled the following changes are requir
     ```
 1. Install Coil on the cluster:
     ```bash
-    make install-coil-egress-kindnet-v6
+    make install-coil-egress-v6
     ```
 1. Run egress-only IPv6 tests:
     ```bash
     TEST_IPAM=false TEST_EGRESS=true TEST_IPV6=true make test
     ```
-
-#### Testing with Calico using IPv4
-1. Generate certificates using `v2/Makefile`.
-    ```bash
-    cd v2 && make certs
-    ```
-1. Go to `v2/e2e`
-    ```bash
-    cd e2e
-    ```
-1. Create IPv4 based Kind cluster with no default CNI:
-    ```bash
-    WITH_KINDNET=false TEST_IPV6=false make start
-    ```
-1. Install Coil and Calico on the cluster:
-    ```bash
-    make install-coil-egress-calico-v4
-    ```
-1. Run egress-only IPv4 tests:
-    ```bash
-    TEST_IPAM=false TEST_EGRESS=true TEST_IPV6=false make test
-    ```
-
-#### Testing with Calico using IPv6
-1. Generate certificates using `v2/Makefile`.
-    ```bash
-    cd v2 && make certs
-    ```
-1. Go to `v2/e2e`
-    ```bash
-    cd e2e
-    ```
-1. Create IPv6 based Kind cluster with no default CNI:
-    ```bash
-    WITH_KINDNET=false TEST_IPV6=true make start
-    ```
-1. Install Coil and Calico on the cluster:
-    ```bash
-    make install-coil-egress-calico-v6
-    ```
-1. Run egress-only IPv6 tests:
-    ```bash
-    TEST_IPAM=false TEST_EGRESS=true TEST_IPV6=true make test
