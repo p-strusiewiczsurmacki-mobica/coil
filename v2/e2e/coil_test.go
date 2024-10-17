@@ -400,19 +400,24 @@ func testEgress() {
 		}
 
 		By("setting a fake global address to coil-control-plane")
-		runOnNode("coil-control-plane", "ip", "link", "add", "dummy-fake", "type", "dummy")
-		// Expect(err).NotTo(HaveOccurred())
-		runOnNode("coil-control-plane", "ip", "link", "set", "dummy-fake", "up")
-		// Expect(err).NotTo(HaveOccurred())
+		_, err := runOnNode("coil-control-plane", "ip", "link", "add", "dummy-fake", "type", "dummy")
+		Expect(err).NotTo(HaveOccurred())
+		_, err = runOnNode("coil-control-plane", "ip", "link", "set", "dummy-fake", "up")
+		Expect(err).NotTo(HaveOccurred())
 		if testIPv6 {
-			runOnNode("coil-control-plane", "ip", "address", "add", fakeIP+"/128", "dev", "dummy-fake", "nodad")
+			_, err = runOnNode("coil-control-plane", "ip", "address", "add", fakeIP+"/128", "dev", "dummy-fake", "nodad")
 		} else {
-			runOnNode("coil-control-plane", "ip", "address", "add", fakeIP+"/32", "dev", "dummy-fake")
+			_, err = runOnNode("coil-control-plane", "ip", "address", "add", fakeIP+"/32", "dev", "dummy-fake")
 		}
-		// Expect(err).NotTo(HaveOccurred())
+		Expect(err).NotTo(HaveOccurred())
 
 		By("running HTTP server on coil-control-plane")
-		go runOnNode("coil-control-plane", "/usr/local/bin/echotest")
+		if os.Getenv(testIPAMKey) == "true" {
+			go runOnNode("coil-control-plane", "/usr/local/bin/echotest")
+		} else {
+			go runOnNode("coil-control-plane", "/usr/local/bin/echotest", "reply")
+		}
+
 		time.Sleep(100 * time.Millisecond)
 
 		By("sending and receiving HTTP request from nat-client")
