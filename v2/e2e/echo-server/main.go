@@ -1,13 +1,14 @@
 package main
 
 import (
+	"flag"
 	"io"
+	"net"
 	"net/http"
-	"os"
 )
 
 type echoHandler struct {
-	withReply bool
+	withRemoteAddrReply bool
 }
 
 func (h echoHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
@@ -18,23 +19,27 @@ func (h echoHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	w.Header().Set("content-type", "application/octet-stream")
-	w.Write(body)
-	if h.withReply {
-		w.Write([]byte(req.Host))
-	}
 
+	if h.withRemoteAddrReply {
+		remote, _, err := net.SplitHostPort(req.RemoteAddr)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		remote += "|"
+		w.Write([]byte(remote))
+	}
+	w.Write(body)
 }
 
 func main() {
-	withReply := false
-	if len(os.Args) > 1 {
-		if os.Args[1] == "reply" {
-			withReply = true
-		}
-	}
+	var withRemoteAddress bool
+	flag.BoolVar(&withRemoteAddress, "reply-remote", false, "if set, echo-server will reply with remote host address (default: false)")
+	flag.Parse()
+
 	s := &http.Server{
 		Handler: echoHandler{
-			withReply: withReply,
+			withRemoteAddrReply: withRemoteAddress,
 		},
 	}
 	s.ListenAndServe()

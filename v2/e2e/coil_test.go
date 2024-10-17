@@ -19,14 +19,16 @@ import (
 )
 
 var (
-	testIPv6 = os.Getenv(testIPv6Key) == "true"
+	enableIPv6Tests   = os.Getenv(testIPv6Key) == "true"
+	enableIPAMTests   = os.Getenv(testIPAMKey) == "true"
+	enableEgressTests = os.Getenv(testEgressKey) == "true"
 )
 
 var _ = Describe("coil", func() {
-	if os.Getenv(testIPAMKey) == "true" {
+	if enableIPAMTests {
 		Context("when the IPAM features are enabled", testIPAM)
 	}
-	if os.Getenv(testEgressKey) == "true" {
+	if enableEgressTests {
 		Context("when egress feature is enabled", testEgress)
 	}
 	Context("when coild is deployed", testCoild)
@@ -71,7 +73,7 @@ func testIPAM() {
 	It("should allow pods on different nodes to communicate", func() {
 		By("creating the default pool")
 		manifest := "manifests/default_pool.yaml"
-		if testIPv6 {
+		if enableIPv6Tests {
 			manifest = "manifests/default_pool_v6.yaml"
 		}
 		kubectlSafe(nil, "apply", "-f", manifest)
@@ -116,7 +118,7 @@ func testIPAM() {
 
 		By("checking communication between pods on different nodes")
 		var testURL string
-		if testIPv6 {
+		if enableIPv6Tests {
 			testURL = fmt.Sprintf("http://[%s]:8000", httpdIP)
 		} else {
 			testURL = fmt.Sprintf("http://%s:8000", httpdIP)
@@ -198,7 +200,7 @@ func testIPAM() {
 
 	It("should export routes to routing table 119", func() {
 		var ipOpt string
-		if testIPv6 {
+		if enableIPv6Tests {
 			ipOpt = "-6"
 		} else {
 			ipOpt = "-4"
@@ -389,7 +391,7 @@ func testEgress() {
 
 	It("should allow NAT traffic over foo-over-udp tunnel", func() {
 		var fakeIP, fakeURL, ipOpt string
-		if testIPv6 {
+		if enableIPv6Tests {
 			fakeIP = "2606:4700:4700::9999"
 			fakeURL = fmt.Sprintf("http://[%s]", fakeIP)
 			ipOpt = "-6"
@@ -404,44 +406,50 @@ func testEgress() {
 		Expect(err).NotTo(HaveOccurred())
 		_, err = runOnNode("coil-control-plane", "ip", "link", "set", "dummy-fake", "up")
 		Expect(err).NotTo(HaveOccurred())
-		if testIPv6 {
+		if enableIPv6Tests {
 			_, err = runOnNode("coil-control-plane", "ip", "address", "add", fakeIP+"/128", "dev", "dummy-fake", "nodad")
 		} else {
 			_, err = runOnNode("coil-control-plane", "ip", "address", "add", fakeIP+"/32", "dev", "dummy-fake")
 		}
 		Expect(err).NotTo(HaveOccurred())
 
+		natAddresses := []string{}
+		if !enableIPAMTests {
+			natAddresses = getNATAddresses("egress")
+		}
+
 		By("running HTTP server on coil-control-plane")
-		if os.Getenv(testIPAMKey) == "true" {
+		if enableIPAMTests {
 			go runOnNode("coil-control-plane", "/usr/local/bin/echotest")
 		} else {
-			go runOnNode("coil-control-plane", "/usr/local/bin/echotest", "reply")
+			go runOnNode("coil-control-plane", "/usr/local/bin/echotest", "--reply-remote")
 		}
 
 		time.Sleep(100 * time.Millisecond)
 
 		By("sending and receiving HTTP request from nat-client")
 		data := make([]byte, 1<<20) // 1 MiB
-		resp := kubectlSafe(data, "exec", "-i", "nat-client", "--", "curl", "-sf", "-T", "-", fakeURL)
-		Expect(resp).To(HaveLen(1 << 20))
+		testNAT(data, "nat-client", fakeURL, natAddresses, enableIPAMTests)
 
 		By("running the same test 100 times")
 		for i := 0; i < 100; i++ {
 			time.Sleep(1 * time.Millisecond)
-			resp := kubectlSafe(data, "exec", "-i", "nat-client", "--", "curl", "-sf", "-T", "-", fakeURL)
-			Expect(resp).To(HaveLen(1 << 20))
+			testNAT(data, "nat-client", fakeURL, natAddresses, enableIPAMTests)
+		}
+
+		natAddresses = []string{}
+		if !enableIPAMTests {
+			natAddresses = getNATAddresses("egress-sport-auto")
 		}
 
 		By("sending and receiving HTTP request from nat-client-sport-auto")
 		data = make([]byte, 1<<20) // 1 MiB
-		resp = kubectlSafe(data, "exec", "-i", "nat-client-sport-auto", "--", "curl", "-sf", "-T", "-", fakeURL)
-		Expect(resp).To(HaveLen(1 << 20))
+		testNAT(data, "nat-client-sport-auto", fakeURL, natAddresses, enableIPAMTests)
 
 		By("running the same test 100 times with nat-client-sport-auto")
 		for i := 0; i < 100; i++ {
 			time.Sleep(1 * time.Millisecond)
-			resp := kubectlSafe(data, "exec", "-i", "nat-client-sport-auto", "--", "curl", "-sf", "-T", "-", fakeURL)
-			Expect(resp).To(HaveLen(1 << 20))
+			testNAT(data, "nat-client-sport-auto", fakeURL, natAddresses, enableIPAMTests)
 		}
 
 		By("creating a dummy pod don't use egress")
@@ -541,15 +549,19 @@ func testEgress() {
 		Expect(fouCount).To(Equal(1))
 
 		By("sending and receiving HTTP request from nat-client")
+
+		natAddresses = []string{}
+		if !enableIPAMTests {
+			natAddresses = getNATAddresses("egress")
+		}
+
 		data = make([]byte, 1<<20) // 1 MiB
-		resp = kubectlSafe(data, "exec", "-i", "nat-client", "--", "curl", "-sf", "-T", "-", fakeURL)
-		Expect(resp).To(HaveLen(1 << 20))
+		testNAT(data, "nat-client", fakeURL, natAddresses, enableIPAMTests)
 
 		By("running the same test 100 times")
 		for i := 0; i < 100; i++ {
 			time.Sleep(1 * time.Millisecond)
-			resp := kubectlSafe(data, "exec", "-i", "nat-client", "--", "curl", "-sf", "-T", "-", fakeURL)
-			Expect(resp).To(HaveLen(1 << 20))
+			testNAT(data, "nat-client", fakeURL, natAddresses, enableIPAMTests)
 		}
 	})
 }
@@ -564,4 +576,31 @@ func testCoild() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(mfs).NotTo(BeEmpty())
 	})
+}
+
+func testNAT(data []byte, clientPod, fakeURL string, natAddresses []string, ipamEnabled bool) {
+	resp := kubectlSafe(data, "exec", "-i", clientPod, "--", "curl", "-sf", "-T", "-", fakeURL)
+
+	if !enableIPAMTests {
+		respStr := string(resp)
+		idx := strings.Index(respStr, "|")
+		ipAddr := respStr[:idx]
+		resp = []byte(respStr[idx+1:])
+		Expect(natAddresses).To(ContainElement(ipAddr))
+	}
+	Expect(resp).To(HaveLen(1 << 20))
+}
+
+func getNATAddresses(name string) []string {
+	eps := &corev1.Endpoints{}
+	err := getResource("internet", "endpoints", name, "", eps)
+	Expect(err).ToNot(HaveOccurred())
+
+	natAddresses := []string{}
+	for _, s := range eps.Subsets {
+		for _, a := range s.Addresses {
+			natAddresses = append(natAddresses, a.IP)
+		}
+	}
+	return natAddresses
 }

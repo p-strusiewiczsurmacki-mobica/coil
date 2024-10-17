@@ -82,7 +82,7 @@ func testCoilEgressController() {
 			node := pods.Items[0].Spec.NodeName
 
 			address := fmt.Sprintf("http://%s:9396/metrics", pods.Items[0].Status.PodIP)
-			if testIPv6 {
+			if enableIPv6Tests {
 				address = fmt.Sprintf("http://[%s]:9396/metrics", pods.Items[0].Status.PodIP)
 			}
 
