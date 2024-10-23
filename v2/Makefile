@@ -79,10 +79,31 @@ check-generate:
 
 # Generate manifests e.g. CRD, RBAC etc.
 .PHONY: manifests
-manifests: $(CONTROLLER_GEN) $(ROLES) $(YQ)
-	$(CONTROLLER_GEN) $(CRD_OPTIONS) webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+# manifests: $(CONTROLLER_GEN) $(ROLES) $(YQ)
+# 	$(CONTROLLER_GEN) $(CRD_OPTIONS) webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+# 	# Reduce the size of Egress CRD by deleting `description` fields below the pod's template because it exceeds the limit of `metadata.annotations` length when it's applied with client-side mode.
+# 	#$(YQ) -i 'del(.spec.versions.[].schema.openAPIV3Schema.properties.spec.properties.template | ..  |select(key == "description"))' config/crd/bases/coil.cybozu.com_egresses.yaml
+manifests: manifests-ipam manifests-egress
+
+
+.PHONY: manifests-egress
+manifests-egress: $(CONTROLLER_GEN) $(ROLES) $(YQ)
+	mkdir -p tmp/egress
+	cp api/v2/egress_webhook.go tmp/egress
+	$(CONTROLLER_GEN) $(CRD_OPTIONS) webhook paths="./tmp/egress/..." output:stdout output:crd:artifacts:config=config/crd/bases > config/webhook/egress/manifests.yaml
+	sed -i 's/webhook-/egress-webhook-/g' config/webhook/egress/manifests.yaml
 	# Reduce the size of Egress CRD by deleting `description` fields below the pod's template because it exceeds the limit of `metadata.annotations` length when it's applied with client-side mode.
 	$(YQ) -i 'del(.spec.versions.[].schema.openAPIV3Schema.properties.spec.properties.template | ..  |select(key == "description"))' config/crd/bases/coil.cybozu.com_egresses.yaml
+	rm -rf tmp 2> /dev/null
+
+.PHONY: manifests-ipam
+manifests-ipam: $(CONTROLLER_GEN) $(ROLES) $(YQ)
+	mkdir -p tmp/ipam
+	cp api/v2/addresspool_webhook.go tmp/ipam
+	$(CONTROLLER_GEN) $(CRD_OPTIONS) webhook paths="./tmp/ipam/..." output:stdout output:crd:artifacts:config=config/crd/bases > config/webhook/ipam/manifests.yaml
+	sed -i 's/webhook-/ipam-webhook-/g' config/webhook/ipam/manifests.yaml
+	rm -rf tmp 2> /dev/null
+
 
 $(YQ):
 	$(WGET) -O yq.tar.gz https://github.com/mikefarah/yq/releases/download/v$(YQ_VERSION)/yq_linux_amd64.tar.gz
@@ -150,7 +171,7 @@ config/rbac/coil-egress_role.yaml: controllers/pod_watcher.go
 
 # TLS certificates for webhook
 .PHONY: certs
-certs: config/default/cert.pem config/default/key.pem config/default/ipam-cert.pem config/default/ipam-key.pem config/default/egress-cert.pem config/default/egress-key.pem config/default/webhook_manifests_patch.yaml
+certs: config/default/cert.pem config/default/key.pem config/default/ipam-cert.pem config/default/ipam-key.pem config/default/ipam/webhook_manifests_patch.yaml config/default/egress-cert.pem config/default/egress-key.pem config/default/egress/webhook_manifests_patch.yaml
 
 config/default/cert.pem config/default/key.pem:
 	go run ./cmd/gencert -outdir=$(PWD)/config/default -cn=coilv2-webhook-service -host=coilv2-webhook-service.kube-system.svc -certname=cert.pem -keyname=key.pem
@@ -162,6 +183,12 @@ config/default/egress-cert.pem config/default/egress-key.pem:
 	go run ./cmd/gencert -outdir=$(PWD)/config/default -cn=coilv2-egress-webhook-service -host=coilv2-egress-webhook-service.kube-system.svc -certname=egress-cert.pem -keyname=egress-key.pem -ca=cert.pem -cakey=key.pem
 
 config/default/webhook_manifests_patch.yaml: config/default/cert.pem config/default/webhook_manifests_patch.yaml.tmpl
+	sed "s/%CACERT%/$$(base64 -w0 < $<)/g" $@.tmpl > $@
+
+config/default/ipam/webhook_manifests_patch.yaml: config/default/ipam-cert.pem config/default/ipam/webhook_manifests_patch.yaml.tmpl
+	sed "s/%CACERT%/$$(base64 -w0 < $<)/g" $@.tmpl > $@
+
+config/default/egress/webhook_manifests_patch.yaml: config/default/egress-cert.pem config/default/egress/webhook_manifests_patch.yaml.tmpl
 	sed "s/%CACERT%/$$(base64 -w0 < $<)/g" $@.tmpl > $@
 
 # Generate code

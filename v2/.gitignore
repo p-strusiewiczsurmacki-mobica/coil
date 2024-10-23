@@ -1,5 +1,6 @@
 /bin
-/config/default/webhook_manifests_patch.yaml
+/config/default/ipam/webhook_manifests_patch.yaml
+/config/default/egress/webhook_manifests_patch.yaml
 /include
 /testbin
 /tmp
