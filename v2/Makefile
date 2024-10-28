@@ -182,9 +182,6 @@ config/default/ipam-cert.pem config/default/ipam-key.pem:
 config/default/egress-cert.pem config/default/egress-key.pem:
 	go run ./cmd/gencert -outdir=$(PWD)/config/default -cn=coilv2-egress-webhook-service -host=coilv2-egress-webhook-service.kube-system.svc -certname=egress-cert.pem -keyname=egress-key.pem -ca=cert.pem -cakey=key.pem
 
-config/default/webhook_manifests_patch.yaml: config/default/cert.pem config/default/webhook_manifests_patch.yaml.tmpl
-	sed "s/%CACERT%/$$(base64 -w0 < $<)/g" $@.tmpl > $@
-
 config/default/ipam/webhook_manifests_patch.yaml: config/default/ipam-cert.pem config/default/ipam/webhook_manifests_patch.yaml.tmpl
 	sed "s/%CACERT%/$$(base64 -w0 < $<)/g" $@.tmpl > $@
 
