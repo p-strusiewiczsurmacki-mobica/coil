@@ -101,16 +101,17 @@ jobs:
     - run: make start KUBERNETES_VERSION=${{ matrix.kindest-node }} WITH_KINDNET=true TEST_IPV6=true
       if: matrix.ip-version == 'ipv6'
       working-directory: v2/e2e
+    - run: docker ps
     - run: make install-coil-egress-v4
       if: matrix.ip-version == 'ipv4'
       working-directory: v2/e2e
     - run: make install-coil-egress-v6
       if: matrix.ip-version == 'ipv6'
       working-directory: v2/e2e
-    - run: TEST_IPAM=false TEST_EGRESS=true TEST_IPV6=false make test
+    - run: make test TEST_IPAM=false TEST_EGRESS=true TEST_IPV6=false
       if: matrix.ip-version == 'ipv4'
       working-directory: v2/e2e
-    - run: TEST_IPAM=false TEST_EGRESS=true TEST_IPV6=true make test
+    - run: make test TEST_IPAM=false TEST_EGRESS=true TEST_IPV6=true
       if: matrix.ip-version == 'ipv6'
       working-directory: v2/e2e
     - run: make logs

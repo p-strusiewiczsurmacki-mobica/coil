@@ -66,6 +66,8 @@ func get(conflistName string, protoVer string) error {
 		var buffer bytes.Buffer
 		cmd.Stdout = &buffer
 		if err := cmd.Run(); err != nil {
+			fmt.Printf("Command: %s\n", cmd.String())
+			fmt.Printf("Output: %s\n", buffer.String())
 			return err
 		}
 		output := buffer.String()
@@ -77,9 +79,11 @@ func get(conflistName string, protoVer string) error {
 
 		network := output[start:end]
 		if err := os.Setenv(strings.ToUpper(container)+"_NETWORK", network); err != nil {
+			fmt.Printf("Failed to set env var %s\n", strings.ToUpper(container)+"_NETWORK")
 			return err
 		}
 		if _, err := fmt.Fprintln(f, network); err != nil {
+			fmt.Println("Failed to save data")
 			return err
 		}
 	}
