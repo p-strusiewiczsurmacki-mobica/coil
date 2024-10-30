@@ -47,7 +47,6 @@ jobs:
     - uses: actions/setup-go@v5
       with:
         go-version: ${{ env.go-version }}
-    - run: hostname
     - run: make image
     - run: make certs
     - name: Enable docker IPv6 mode
@@ -121,4 +120,4 @@ jobs:
       if: always()
       with:
         name: logs-egress-${{ matrix.ip-version }}-${{ matrix.kindest-node }}.tar.gz
-        path: v2/e2e/logs-egress.tar.gz
+        path: v2/e2e/logs.tar.gz
