@@ -43,6 +43,7 @@ install-coil-egress-v4: setup-nodes
 	rm -rf tmp
 	mkdir tmp 2> /dev/null
 	CGO_ENABLED=0 go build -o kindnet-conf ./kindnet-configurer
+	$(KUBECTL) rollout status daemonset kindnet -n kube-system --timeout 120s
 	./kindnet-conf get 10-kindnet.conflist v4
 	$(KIND) load docker-image --name coil coil:dev
 	$(KUSTOMIZE) build --load-restrictor=LoadRestrictionsNone configs/egress/v4 | $(KUBECTL) apply -f -
@@ -56,6 +57,7 @@ install-coil-egress-v4: setup-nodes
 install-coil-egress-v6: setup-nodes
 	rm -rf tmp
 	mkdir tmp 2> /dev/null
+	$(KUBECTL) rollout status daemonset kindnet -n kube-system --timeout 120s
 	CGO_ENABLED=0 go build -o kindnet-conf ./kindnet-configurer
 	./kindnet-conf get 10-kindnet.conflist v6
 	$(KIND) load docker-image --name coil coil:dev
