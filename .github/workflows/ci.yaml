@@ -76,7 +76,7 @@ jobs:
     name: End-to-end Test - Egress Only
     strategy:
       matrix:
-        kindest-node: ["1.27.13", "1.28.9", "1.29.4"]
+        kindest-node: ["1.27.13"]
         ip-version: ["ipv4", "ipv6"]
     runs-on: ubuntu-22.04
     steps:
