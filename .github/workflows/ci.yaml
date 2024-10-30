@@ -11,79 +11,80 @@ env:
   go-version: "1.22"
   cache-version: 1
 jobs:
-  # test:
-  #   name: Small test
-  #   runs-on: ubuntu-22.04
-  #   steps:
-  #   - uses: actions/checkout@v4
-  #   - uses: actions/setup-go@v5
-  #     with:
-  #       go-version: ${{ env.go-version }}
-  #   - name: Cache tools
-  #     id: cache-tools
-  #     uses: actions/cache@v4
-  #     with:
-  #       path: |
-  #         v2/bin
-  #         v2/include
-  #       key: cache-${{ env.cache-version }}-go-${{ env.go-version }}-${{ hashFiles('v2/Makefile') }}
-  #   - run: make setup
-  #     if: steps.cache-tools.outputs.cache-hit != 'true'
-  #   - run: make test
-  #   - run: make test-nodenet
-  #     timeout-minutes: 10
-  #   - run: make test-founat
-  #     timeout-minutes: 10
-  #   - run: make check-generate
-  # e2e:
-  #   name: End-to-end Test
-  #   strategy:
-  #     matrix:
-  #       kindest-node: ["1.27.13", "1.28.9", "1.29.4"]
-  #       ip-version: ["ipv4", "ipv6"]
-  #   runs-on: ubuntu-22.04
-  #   steps:
-  #   - uses: actions/checkout@v4
-  #   - uses: actions/setup-go@v5
-  #     with:
-  #       go-version: ${{ env.go-version }}
-  #   - run: make image
-  #   - run: make certs
-  #   - name: Enable docker IPv6 mode
-  #     if: matrix.ip-version == 'ipv6'
-  #     working-directory: v2/e2e
-  #     run: |
-  #       sudo mkdir -p /etc/docker
-  #       sudo cp daemon.json /etc/docker/daemon.json
-  #       sudo systemctl restart docker.service
-  #       sleep 10
-  #       echo TEST_IPV6=true >> $GITHUB_ENV
-  #   - run: make start KUBERNETES_VERSION=${{ matrix.kindest-node }}
-  #     working-directory: v2/e2e
-  #   - run: make install-coil
-  #     working-directory: v2/e2e
-  #   - run: make test
-  #     working-directory: v2/e2e
-  #   - run: make logs
-  #     working-directory: v2/e2e
-  #     if: always()
-  #   - uses: actions/upload-artifact@v4
-  #     if: always()
-  #     with:
-  #       name: logs-${{ matrix.ip-version }}-${{ matrix.kindest-node }}.tar.gz
-  #       path: v2/e2e/logs.tar.gz
-  e2e-egress:
-    name: End-to-end Test - Egress Only
-    strategy:
-      matrix:
-        kindest-node: ["1.27.13"]
-        ip-version: ["ipv4"]
+  test:
+    name: Small test
     runs-on: ubuntu-22.04
     steps:
     - uses: actions/checkout@v4
     - uses: actions/setup-go@v5
       with:
         go-version: ${{ env.go-version }}
+    - name: Cache tools
+      id: cache-tools
+      uses: actions/cache@v4
+      with:
+        path: |
+          v2/bin
+          v2/include
+        key: cache-${{ env.cache-version }}-go-${{ env.go-version }}-${{ hashFiles('v2/Makefile') }}
+    - run: make setup
+      if: steps.cache-tools.outputs.cache-hit != 'true'
+    - run: make test
+    - run: make test-nodenet
+      timeout-minutes: 10
+    - run: make test-founat
+      timeout-minutes: 10
+    - run: make check-generate
+  e2e:
+    name: End-to-end Test
+    strategy:
+      matrix:
+        kindest-node: ["1.27.13", "1.28.9", "1.29.4"]
+        ip-version: ["ipv4", "ipv6"]
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-go@v5
+      with:
+        go-version: ${{ env.go-version }}
+    - run: make image
+    - run: make certs
+    - name: Enable docker IPv6 mode
+      if: matrix.ip-version == 'ipv6'
+      working-directory: v2/e2e
+      run: |
+        sudo mkdir -p /etc/docker
+        sudo cp daemon.json /etc/docker/daemon.json
+        sudo systemctl restart docker.service
+        sleep 10
+        echo TEST_IPV6=true >> $GITHUB_ENV
+    - run: make start KUBERNETES_VERSION=${{ matrix.kindest-node }}
+      working-directory: v2/e2e
+    - run: make install-coil
+      working-directory: v2/e2e
+    - run: make test
+      working-directory: v2/e2e
+    - run: make logs
+      working-directory: v2/e2e
+      if: always()
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: logs-${{ matrix.ip-version }}-${{ matrix.kindest-node }}.tar.gz
+        path: v2/e2e/logs.tar.gz
+  e2e-egress:
+    name: End-to-end Test - Egress Only
+    strategy:
+      matrix:
+        kindest-node: ["1.27.13", "1.28.9", "1.29.4"]
+        ip-version: ["ipv4", "ipv6"]
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-go@v5
+      with:
+        go-version: ${{ env.go-version }}
+    - run: make image
     - run: make certs
     - name: Enable docker IPv6 mode
       if: matrix.ip-version == 'ipv6'
@@ -100,12 +101,6 @@ jobs:
     - run: make start KUBERNETES_VERSION=${{ matrix.kindest-node }} WITH_KINDNET=true TEST_IPV6=true
       if: matrix.ip-version == 'ipv6'
       working-directory: v2/e2e
-    - run: docker ps
-    - run: docker exec coil-worker ls /etc/cni/net.d/
-    - run: docker exec coil-control-plane kubectl get pod -Ao wide
-    - run: sleep 120
-    - run: docker exec coil-worker ls /etc/cni/net.d/
-    - run: docker exec coil-control-plane kubectl get pod -Ao wide
     - run: make install-coil-egress-v4
       if: matrix.ip-version == 'ipv4'
       working-directory: v2/e2e
