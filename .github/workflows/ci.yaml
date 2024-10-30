@@ -102,6 +102,8 @@ jobs:
       if: matrix.ip-version == 'ipv6'
       working-directory: v2/e2e
     - run: docker ps
+    - run: docker exec coil-worker ls /etc/cni/net.d/
+    - run: docker exec coil-control-plane kubectl get pod -Ao wide
     - run: make install-coil-egress-v4
       if: matrix.ip-version == 'ipv4'
       working-directory: v2/e2e
