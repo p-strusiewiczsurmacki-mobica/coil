@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -10,43 +11,48 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
-	containerName = "coil-worker"
-	ipv4          = "v4"
-	ipv6          = "v6"
+	containerName   = "coil-worker"
+	ipv4            = "v4"
+	ipv6            = "v6"
+	getAction       = "get"
+	setAction       = "set"
+	defaultConflist = "10-kindnet.conflist"
+	numOfNodes      = 4
 )
 
 func main() {
-	if len(os.Args) < 4 {
-		log.Fatal("too few arguments")
+	action := flag.String("action", getAction, "Action to perform (get/set)")
+	container := flag.String("container", containerName, "Base name of the container to use")
+	protocol := flag.String("protocol", ipv4, "Version of IP protocol to use")
+	file := flag.String("file", defaultConflist, "CNI config file to edit")
+
+	flag.Parse()
+
+	if *protocol != ipv4 && *protocol != ipv6 {
+		log.Fatalf("invalid protocol [%s]", *protocol)
 	}
 
-	cmd := os.Args[1]
-	conflistName := os.Args[2]
-	protoVer := os.Args[3]
-
-	if protoVer != ipv4 && protoVer != ipv6 {
-		log.Fatalf("invalid protocol")
-	}
-
-	switch cmd {
-	case "get":
-		if err := get(conflistName, protoVer); err != nil {
+	switch *action {
+	case getAction:
+		if err := get(*file, *protocol, *container); err != nil {
 			log.Fatal(err)
 		}
-	case "set":
-		if err := set(conflistName, protoVer); err != nil {
+	case setAction:
+		if err := set(*file, *protocol, *container); err != nil {
 			log.Fatal(err)
 		}
 	default:
-		log.Fatalf("%s: command not supported", cmd)
+		log.Fatalf("command [%s] not supported", *action)
 	}
 }
 
-func get(conflistName string, protoVer string) error {
-	f, err := os.Create(filepath.Join("tmp", "networks"))
+func get(conflistName, protoVer, contianerBase string) error {
+	path := filepath.Join("tmp", "networks")
+	f, err := os.Create(path)
 	if err != nil {
 		return err
 	}
@@ -57,18 +63,35 @@ func get(conflistName string, protoVer string) error {
 		address = "fd00:10:244:"
 	}
 
-	for i := 1; i < 4; i++ {
-		container := containerName
+	for i := 1; i < numOfNodes; i++ {
+		container := contianerBase
 		if i > 1 {
 			container += strconv.Itoa(i)
 		}
-		cmd := exec.Command("docker", "exec", container, "cat", "/etc/cni/net.d/"+conflistName)
-		var buffer bytes.Buffer
-		cmd.Stdout = &buffer
-		if err := cmd.Run(); err != nil {
-			return err
+		var err error
+		var output string
+		var errOutput string
+		for i := 0; i < 120; i++ {
+			cmd := exec.Command("docker", "exec", container, "cat", "/etc/cni/net.d/"+conflistName)
+			var buffer bytes.Buffer
+			cmd.Stdout = &buffer
+			var bufferErr bytes.Buffer
+			cmd.Stderr = &bufferErr
+			if err = cmd.Run(); err != nil {
+				errOutput = bufferErr.String()
+				fmt.Printf("Error: %s: %s\n", err.Error(), errOutput)
+				fmt.Println("Retrying...")
+				time.Sleep(time.Second)
+			} else {
+				output = buffer.String()
+				break
+			}
 		}
-		output := buffer.String()
+
+		if err != nil {
+			return fmt.Errorf("error: %w: %s", err, errOutput)
+		}
+
 		start := strings.Index(output, address)
 		end := start + 10
 		if protoVer == ipv6 {
@@ -76,18 +99,19 @@ func get(conflistName string, protoVer string) error {
 		}
 
 		network := output[start:end]
-		if err := os.Setenv(strings.ToUpper(container)+"_NETWORK", network); err != nil {
-			return err
+		key := strings.ToUpper(container) + "_NETWORK"
+		if err := os.Setenv(key, network); err != nil {
+			return fmt.Errorf("failed to set env [%s]: %w", key, err)
 		}
 		if _, err := fmt.Fprintln(f, network); err != nil {
-			return err
+			return fmt.Errorf("failed to write temporary file %s: %w", path, err)
 		}
 	}
 
 	return nil
 }
 
-func set(conflistName string, protoVer string) error {
+func set(conflistName, protoVer, contianerBase string) error {
 	f, err := os.Open(filepath.Join("tmp", "networks"))
 	if err != nil {
 		return err
@@ -96,8 +120,8 @@ func set(conflistName string, protoVer string) error {
 
 	scanner := bufio.NewScanner(f)
 
-	for i := 1; i < 4; i++ {
-		container := containerName
+	for i := 1; i < numOfNodes; i++ {
+		container := contianerBase
 		if i > 1 {
 			container += strconv.Itoa(i)
 		}

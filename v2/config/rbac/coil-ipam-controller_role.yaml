@@ -12,14 +12,6 @@ rules:
   - get
   - list
 - apiGroups:
-  - ""
-  resources:
-  - pods
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
   - coil.cybozu.com
   resources:
   - addressblocks

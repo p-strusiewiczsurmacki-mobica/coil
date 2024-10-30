@@ -107,6 +107,9 @@ jobs:
     - run: make install-coil-egress-v6
       if: matrix.ip-version == 'ipv6'
       working-directory: v2/e2e
+    - run: docker exec -i coil-worker ls /etc/cni/net.d/
+      working-directory: v2/e2e
+      if: always()
     - run: make test TEST_IPAM=false TEST_EGRESS=true TEST_IPV6=false
       if: matrix.ip-version == 'ipv4'
       working-directory: v2/e2e
