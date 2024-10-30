@@ -84,7 +84,6 @@ jobs:
     - uses: actions/setup-go@v5
       with:
         go-version: ${{ env.go-version }}
-    - run: make image
     - run: make certs
     - name: Enable docker IPv6 mode
       if: matrix.ip-version == 'ipv6'
