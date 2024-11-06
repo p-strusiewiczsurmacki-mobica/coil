@@ -19,6 +19,7 @@ jobs:
     - uses: actions/setup-go@v5
       with:
         go-version: ${{ env.go-version }}
+        cache-dependency-path: "**/go.sum"
     - name: Cache tools
       id: cache-tools
       uses: actions/cache@v4
@@ -47,6 +48,7 @@ jobs:
     - uses: actions/setup-go@v5
       with:
         go-version: ${{ env.go-version }}
+        cache-dependency-path: "**/go.sum"
     - run: make image
     - run: make certs
     - name: Enable docker IPv6 mode
@@ -62,7 +64,11 @@ jobs:
       working-directory: v2/e2e
     - run: make install-coil
       working-directory: v2/e2e
-    - run: make test
+    - run: make test TEST_IPAM=true TEST_EGRESS=true TEST_IPV6=false
+      if: matrix.ip-version == 'ipv4'
+      working-directory: v2/e2e
+    - run: make test TEST_IPAM=true TEST_EGRESS=true TEST_IPV6=true
+      if: matrix.ip-version == 'ipv6'
       working-directory: v2/e2e
     - run: make logs
       working-directory: v2/e2e
@@ -84,6 +90,7 @@ jobs:
     - uses: actions/setup-go@v5
       with:
         go-version: ${{ env.go-version }}
+        cache-dependency-path: "**/go.sum"
     - run: make image
     - run: make certs
     - name: Enable docker IPv6 mode
