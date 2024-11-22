@@ -21,11 +21,7 @@
     }, 
     {
       "type": "coil",
-      "socket": "/run/coild.sock",
-      "capabilities": {
-        "ipam": false,
-        "egress": true
-      }
+      "socket": "/run/coild.sock"
     },
     {
       "type": "portmap",

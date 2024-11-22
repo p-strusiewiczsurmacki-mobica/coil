@@ -4,11 +4,7 @@
   "plugins": [
     {
       "type": "coil",
-      "socket": "/run/coild.sock",
-      "capabilities": {
-        "ipam": true,
-        "egress": true
-      }
+      "socket": "/run/coild.sock"
     },
     {
       "type": "portmap",

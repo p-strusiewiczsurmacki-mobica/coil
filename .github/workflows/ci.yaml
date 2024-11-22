@@ -13,6 +13,9 @@ env:
 jobs:
   test:
     name: Small test
+    strategy:
+      matrix:
+        test-ipam: ["true", "false"]
     runs-on: ubuntu-22.04
     steps:
     - uses: actions/checkout@v4
@@ -28,7 +31,7 @@ jobs:
           v2/bin
           v2/include
         key: cache-${{ env.cache-version }}-go-${{ env.go-version }}-${{ hashFiles('v2/Makefile') }}
-    - run: make setup
+    - run: make setup TEST_IPAM=${{ matrix.test-ipam }} TEST_EGRESS=true
       if: steps.cache-tools.outputs.cache-hit != 'true'
     - run: make test
     - run: make test-nodenet
