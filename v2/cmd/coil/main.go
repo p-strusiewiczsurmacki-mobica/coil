@@ -14,24 +14,13 @@ import (
 )
 
 const (
-	rpcTimeout      = 1 * time.Minute
-	ipamEnableKey   = "ipam"
-	egressEnableKey = "egress"
+	rpcTimeout = 1 * time.Minute
 )
 
 func cmdAdd(args *skel.CmdArgs) error {
 	conf, err := parseConfig(args.StdinData)
 	if err != nil {
 		return err
-	}
-
-	ipamEnablad, exists := conf.Capabilities[ipamEnableKey]
-	if !exists {
-		ipamEnablad = true
-	}
-
-	if ipamEnablad && conf.PrevResult != nil {
-		return types.NewError(types.ErrInvalidNetworkConfig, "coil must be called as the first plugin when IPAM related features are enabled", "")
 	}
 
 	cniArgs, err := makeCNIArgs(args, conf)

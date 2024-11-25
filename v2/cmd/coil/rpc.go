@@ -25,18 +25,7 @@ func makeCNIArgs(args *skel.CmdArgs, conf *PluginConf) (*cnirpc.CNIArgs, error) 
 	}
 
 	argsData := env.Map()
-	ipamEnablad, exists := conf.Capabilities[ipamEnableKey]
-	if !exists {
-		ipamEnablad = true
-	}
-
-	egressEnabled, exists := conf.Capabilities[egressEnableKey]
-	if !exists {
-		egressEnabled = true
-	}
-
-	argsData[constants.EnableIPAM] = strconv.FormatBool(ipamEnablad)
-	argsData[constants.EnableEgress] = strconv.FormatBool(egressEnabled)
+	argsData[constants.IsChained] = strconv.FormatBool(conf.PrevResult != nil)
 
 	ips := []string{}
 	interfaces := map[string]bool{}

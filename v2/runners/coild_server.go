@@ -12,6 +12,7 @@ import (
 	current "github.com/containernetworking/cni/pkg/types/100"
 	coilv2 "github.com/cybozu-go/coil/v2/api/v2"
 	"github.com/cybozu-go/coil/v2/pkg/cnirpc"
+	"github.com/cybozu-go/coil/v2/pkg/config"
 	"github.com/cybozu-go/coil/v2/pkg/constants"
 	"github.com/cybozu-go/coil/v2/pkg/founat"
 	"github.com/cybozu-go/coil/v2/pkg/ipam"
@@ -91,7 +92,8 @@ func (n natSetup) Hook(l []GWNets, log *zap.Logger) func(ipv4, ipv6 net.IP) erro
 }
 
 // NewCoildServer returns an implementation of cnirpc.CNIServer for coild.
-func NewCoildServer(l net.Listener, mgr manager.Manager, nodeIPAM ipam.NodeIPAM, podNet nodenet.PodNetwork, setup NATSetup, logger *zap.Logger) manager.Runnable {
+func NewCoildServer(l net.Listener, mgr manager.Manager, nodeIPAM ipam.NodeIPAM, podNet nodenet.PodNetwork, setup NATSetup, cfg *config.Config, logger *zap.Logger,
+	aliasFunc func(interfaces map[string]bool, conf *nodenet.PodNetConf, logger *zap.Logger, pod *corev1.Pod) error) manager.Runnable {
 	return &coildServer{
 		listener:  l,
 		apiReader: mgr.GetAPIReader(),
@@ -100,6 +102,8 @@ func NewCoildServer(l net.Listener, mgr manager.Manager, nodeIPAM ipam.NodeIPAM,
 		podNet:    podNet,
 		natSetup:  setup,
 		logger:    logger,
+		cfg:       cfg,
+		aliasFunc: aliasFunc,
 	}
 }
 
@@ -123,6 +127,8 @@ type coildServer struct {
 	podNet    nodenet.PodNetwork
 	natSetup  NATSetup
 	logger    *zap.Logger
+	cfg       *config.Config
+	aliasFunc func(interfaces map[string]bool, conf *nodenet.PodNetConf, logger *zap.Logger, pod *corev1.Pod) error
 }
 
 var _ manager.LeaderElectionRunnable = &coildServer{}
@@ -173,24 +179,28 @@ func newInternalError(err error, msg string) error {
 func (s *coildServer) Add(ctx context.Context, args *cnirpc.CNIArgs) (*cnirpc.AddResponse, error) {
 	logger := withCtxFields(ctx, s.logger)
 
+	isChained, err := getSettings(args)
+	if err != nil {
+		return nil, newInternalError(fmt.Errorf("runtime error"), "failed to get CNi arguments")
+	}
+
+	if s.cfg.EnableIPAM && isChained {
+		return nil, newInternalError(fmt.Errorf("configuration error"), "coil must be called as the first plugin when IPAM related features are enabled")
+	}
+
 	pod, err := s.getPodFromArgs(ctx, args, logger)
 	if err != nil {
 		return nil, newInternalError(err, "failed to get pod")
 	}
 
-	ipamEnabled, egressEnabled, err := getSettings(args)
-	if err != nil {
-		return nil, newInternalError(err, "error parsing settings")
-	}
-
-	if !ipamEnabled && !egressEnabled {
+	if !s.cfg.EnableIPAM && !s.cfg.EnableEgress {
 		return nil, newInternalError(fmt.Errorf("configuration error"), "both ipam and egress are disabled")
 	}
 
 	var ipv4, ipv6 net.IP
 	var poolName string
 
-	if ipamEnabled {
+	if s.cfg.EnableIPAM {
 		ns := &corev1.Namespace{}
 		if err := s.client.Get(ctx, client.ObjectKey{Name: pod.Namespace}, ns); err != nil {
 			logger.Sugar().Errorw("failed to get namespace", "name", pod.Namespace, "error", err)
@@ -222,7 +232,7 @@ func (s *coildServer) Add(ctx context.Context, args *cnirpc.CNIArgs) (*cnirpc.Ad
 		PoolName:    poolName,
 	}
 
-	if ipamEnabled {
+	if s.cfg.EnableIPAM {
 		result, err = s.podNet.SetupIPAM(args.Netns, pod.Name, pod.Namespace, config)
 		if err != nil {
 			if err := s.nodeIPAM.Free(ctx, args.ContainerId, args.Ifname); err != nil {
@@ -233,10 +243,10 @@ func (s *coildServer) Add(ctx context.Context, args *cnirpc.CNIArgs) (*cnirpc.Ad
 		}
 	}
 
-	if egressEnabled {
-		if !ipamEnabled {
-			if err := setCoilInterfaceAlias(args.Interfaces, config, logger, pod); err != nil {
-				return nil, newInternalError(err, "failed to set interface alias")
+	if s.cfg.EnableEgress {
+		if !s.cfg.EnableIPAM {
+			if err := s.aliasFunc(args.Interfaces, config, logger, pod); err != nil {
+				return nil, fmt.Errorf("failed to set interface alias: %w", err)
 			}
 		}
 
@@ -256,7 +266,7 @@ func (s *coildServer) Add(ctx context.Context, args *cnirpc.CNIArgs) (*cnirpc.Ad
 
 	data, err := json.Marshal(result)
 	if err != nil {
-		if ipamEnabled {
+		if s.cfg.EnableIPAM {
 			if err := s.podNet.Destroy(args.ContainerId, args.Ifname); err != nil {
 				logger.Sugar().Warnw("failed to destroy pod network", "error", err)
 			}
@@ -270,7 +280,7 @@ func (s *coildServer) Add(ctx context.Context, args *cnirpc.CNIArgs) (*cnirpc.Ad
 	return &cnirpc.AddResponse{Result: data}, nil
 }
 
-func setCoilInterfaceAlias(interfaces map[string]bool, conf *nodenet.PodNetConf, logger *zap.Logger, pod *corev1.Pod) error {
+func SetCoilInterfaceAlias(interfaces map[string]bool, conf *nodenet.PodNetConf, logger *zap.Logger, pod *corev1.Pod) error {
 	ifName := ""
 	for name, isSandbox := range interfaces {
 		if !isSandbox {
@@ -281,7 +291,7 @@ func setCoilInterfaceAlias(interfaces map[string]bool, conf *nodenet.PodNetConf,
 	logger.Sugar().Infof("interface selected: %s", ifName)
 	hLink, err := netlink.LinkByName(ifName)
 	if err != nil {
-		return fmt.Errorf("netlink: failed to look up the host-side veth: %w", err)
+		return fmt.Errorf("netlink: failed to look up the host-side veth [%s]: %w", ifName, err)
 	}
 	logger.Sugar().Infof("link found: %v", hLink)
 
@@ -313,12 +323,7 @@ func getPodIPs(ips []string) (net.IP, net.IP) {
 func (s *coildServer) Del(ctx context.Context, args *cnirpc.CNIArgs) (*emptypb.Empty, error) {
 	logger := withCtxFields(ctx, s.logger)
 
-	ipamEnabled, _, err := getSettings(args)
-	if err != nil {
-		return nil, newInternalError(err, "error parsing settings")
-	}
-
-	if ipamEnabled {
+	if s.cfg.EnableIPAM {
 		if err := s.podNet.Destroy(args.ContainerId, args.Ifname); err != nil {
 			logger.Sugar().Errorw("failed to destroy pod network", "error", err)
 			return nil, newInternalError(err, "failed to destroy pod network")
@@ -335,17 +340,12 @@ func (s *coildServer) Del(ctx context.Context, args *cnirpc.CNIArgs) (*emptypb.E
 func (s *coildServer) Check(ctx context.Context, args *cnirpc.CNIArgs) (*emptypb.Empty, error) {
 	logger := withCtxFields(ctx, s.logger)
 
-	ipamEnabled, egressEnabled, err := getSettings(args)
-	if err != nil {
-		return nil, newInternalError(err, "check failed")
-	}
-
-	if ipamEnabled {
+	if s.cfg.EnableIPAM {
 		if err := s.podNet.Check(args.ContainerId, args.Ifname); err != nil {
 			logger.Sugar().Errorw("check failed", "error", err)
 			return nil, newInternalError(err, "check failed")
 		}
-	} else if egressEnabled {
+	} else if s.cfg.EnableEgress {
 		pod, err := s.getPodFromArgs(ctx, args, logger)
 		if err != nil {
 			return nil, newInternalError(err, "unable to get pod")
@@ -534,22 +534,14 @@ func withCtxFields(ctx context.Context, l *zap.Logger) *zap.Logger {
 	return l.With(toZapFields(logging.ExtractFields(ctx))...)
 }
 
-func getSettings(args *cnirpc.CNIArgs) (bool, bool, error) {
-	ipamEnabled := true
-	egressEnabled := true
-
+func getSettings(args *cnirpc.CNIArgs) (bool, error) {
+	isChained := false
 	var err error
-	if args.Args[constants.EnableIPAM] != "" {
-		if ipamEnabled, err = strconv.ParseBool(args.Args[constants.EnableIPAM]); err != nil {
-			return false, false, newInternalError(err, "error parsing bool value for IPAM enable flag")
+	_, exists := args.Args[constants.IsChained]
+	if exists {
+		if isChained, err = strconv.ParseBool(args.Args[constants.IsChained]); err != nil {
+			return false, newInternalError(err, "error parsing CNI chaining bool value ")
 		}
 	}
-
-	if args.Args[constants.EnableEgress] != "" {
-		if egressEnabled, err = strconv.ParseBool(args.Args[constants.EnableEgress]); err != nil {
-			return false, false, newInternalError(err, "error parsing bool value for Egress enable flag")
-		}
-	}
-
-	return ipamEnabled, egressEnabled, nil
+	return isChained, nil
 }

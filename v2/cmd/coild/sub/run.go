@@ -38,13 +38,12 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(coilv2.AddToScheme(scheme))
-
 	// +kubebuilder:scaffold:scheme
 }
 
 func subMain() error {
 	// coild needs a raw zap logger for grpc_zip.
-	zapLogger := zap.NewRaw(zap.UseFlagOptions(&config.zapOpts))
+	zapLogger := zap.NewRaw(zap.UseFlagOptions(&cfg.ZapOpts))
 	defer zapLogger.Sync()
 
 	grpcLogger := zapLogger.Named("grpc")
@@ -60,10 +59,10 @@ func subMain() error {
 		Scheme:         scheme,
 		LeaderElection: false,
 		Metrics: metricsserver.Options{
-			BindAddress: config.metricsAddr,
+			BindAddress: cfg.MetricsAddr,
 		},
 		GracefulShutdownTimeout: &timeout,
-		HealthProbeBindAddress:  config.healthAddr,
+		HealthProbeBindAddress:  cfg.HealthAddr,
 	})
 	if err != nil {
 		return err
@@ -76,9 +75,9 @@ func subMain() error {
 		return err
 	}
 
-	exporter := nodenet.NewRouteExporter(config.exportTableId, config.protocolId, ctrl.Log.WithName("route-exporter"))
+	exporter := nodenet.NewRouteExporter(cfg.ExportTableId, cfg.ProtocolId, ctrl.Log.WithName("route-exporter"))
 	nodeIPAM := ipam.NewNodeIPAM(nodeName, ctrl.Log.WithName("node-ipam"), mgr, exporter)
-	if config.enableIPAM {
+	if cfg.EnableIPAM {
 		watcher := &controllers.BlockRequestWatcher{
 			Client:   mgr.GetClient(),
 			NodeIPAM: nodeIPAM,
@@ -96,20 +95,20 @@ func subMain() error {
 	}
 
 	podNet := nodenet.NewPodNetwork(
-		config.podTableId,
-		config.podRulePrio,
-		config.protocolId,
+		cfg.PodTableId,
+		cfg.PodRulePrio,
+		cfg.ProtocolId,
 		ipv4,
 		ipv6,
-		config.compatCalico,
-		config.registerFromMain,
+		cfg.CompatCalico,
+		cfg.RegisterFromMain,
 		ctrl.Log.WithName("pod-network"),
-		config.enableIPAM)
+		cfg.EnableIPAM)
 	if err := podNet.Init(); err != nil {
 		return err
 	}
 
-	if config.enableIPAM {
+	if cfg.EnableIPAM {
 		podConfigs, err := podNet.List()
 		if err != nil {
 			return err
@@ -125,22 +124,22 @@ func subMain() error {
 		}
 	}
 
-	os.Remove(config.socketPath)
-	l, err := net.Listen("unix", config.socketPath)
+	os.Remove(cfg.SocketPath)
+	l, err := net.Listen("unix", cfg.SocketPath)
 	if err != nil {
 		return err
 	}
-	server := runners.NewCoildServer(l, mgr, nodeIPAM, podNet, runners.NewNATSetup(config.egressPort), grpcLogger)
+	server := runners.NewCoildServer(l, mgr, nodeIPAM, podNet, runners.NewNATSetup(cfg.EgressPort), cfg, grpcLogger, runners.SetCoilInterfaceAlias)
 	if err := mgr.Add(server); err != nil {
 		return err
 	}
 
-	if config.enableEgress {
+	if cfg.EnableEgress {
 		egressWatcher := &controllers.EgressWatcher{
 			Client:     mgr.GetClient(),
 			NodeName:   nodeName,
 			PodNet:     podNet,
-			EgressPort: config.egressPort,
+			EgressPort: cfg.EgressPort,
 		}
 		if err := egressWatcher.SetupWithManager(mgr); err != nil {
 			return err

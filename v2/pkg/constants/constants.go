@@ -58,10 +58,23 @@ const (
 )
 
 // Config flags
-
 const (
-	EnableIPAM   = "ENABLE_IPAM"
-	EnableEgress = "ENABLE_EGRESS"
+	IsChained = "IS_CHAINED"
+)
+
+// Default config values
+const (
+	DefautlMetricsAddr      = ":9384"
+	DefautlHealthAddr       = ":9385"
+	DefautlPodTableId       = 116
+	DefautlPodRulePrio      = 2000
+	DefautlExportTableId    = 119
+	DefautlProtocolId       = 30
+	DefaultCompatCalico     = false
+	DefaultEgressPort       = 5555
+	DefaultRegisterFromMain = false
+	DefaultEnableIPAM       = true
+	DefaultEnableEgress     = true
 )
 
 // MetricsNS is the namespace for Prometheus metrics

@@ -80,8 +80,6 @@ The following example adds `tuning` and `bandwidth` plugins.
     {
       "type": "coil",
       "socket": "/run/coild.sock",
-      "ipam": true,
-      "egress": true
     },
     {
       "type": "tuning",
@@ -270,17 +268,6 @@ To deploy Coil with only egress feature enabled the following changes are requir
     env:
     - name: CNI_CONF_NAME
       value: "01-coil.conflist"
-    ```
-1. Set coil capabilites in `v2/netconf.json` to:
-    ```json
-    {
-      "type": "coil",
-      "socket": "/run/coild.sock",
-      "capabilities": {
-        "ipam": false,
-        "egress": true
-      }
-    },
     ```
 1. Add configuration of your chosen CNI to `v2/netconf.json` before `coil` related configuration.
 1. Deploy `coil` to existing cluster as described in [Compile and apply the manifest](#compile-and-apply-the-manifest).
