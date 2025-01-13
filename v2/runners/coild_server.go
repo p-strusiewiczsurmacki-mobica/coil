@@ -288,12 +288,11 @@ func SetCoilInterfaceAlias(interfaces map[string]bool, conf *nodenet.PodNetConf,
 			break
 		}
 	}
-	logger.Sugar().Infof("interface selected: %s", ifName)
+
 	hLink, err := netlink.LinkByName(ifName)
 	if err != nil {
 		return fmt.Errorf("netlink: failed to look up the host-side veth [%s]: %w", ifName, err)
 	}
-	logger.Sugar().Infof("link found: %v", hLink)
 
 	// give identifier as an alias of host veth
 	if err := netlink.LinkSetAlias(hLink, nodenet.GenAlias(conf, string(pod.UID))); err != nil {
