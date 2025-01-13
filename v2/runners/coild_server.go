@@ -181,7 +181,7 @@ func (s *coildServer) Add(ctx context.Context, args *cnirpc.CNIArgs) (*cnirpc.Ad
 
 	isChained, err := getSettings(args)
 	if err != nil {
-		return nil, newInternalError(fmt.Errorf("runtime error"), "failed to get CNi arguments")
+		return nil, newInternalError(fmt.Errorf("runtime error"), "failed to get CNI arguments")
 	}
 
 	if s.cfg.EnableIPAM && isChained {
