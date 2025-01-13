@@ -54,6 +54,10 @@ func subMain() error {
 		return errors.New(constants.EnvNode + " environment variable should be set")
 	}
 
+	if !cfg.EnableIPAM && !cfg.EnableEgress {
+		return errors.New("configuration error: both IPAM and egress are disabled")
+	}
+
 	timeout := gracefulTimeout
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:         scheme,

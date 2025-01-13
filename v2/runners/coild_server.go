@@ -193,10 +193,6 @@ func (s *coildServer) Add(ctx context.Context, args *cnirpc.CNIArgs) (*cnirpc.Ad
 		return nil, newInternalError(err, "failed to get pod")
 	}
 
-	if !s.cfg.EnableIPAM && !s.cfg.EnableEgress {
-		return nil, newInternalError(fmt.Errorf("configuration error"), "both ipam and egress are disabled")
-	}
-
 	var ipv4, ipv6 net.IP
 	var poolName string
 
