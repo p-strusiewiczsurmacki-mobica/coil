@@ -106,9 +106,6 @@ define comment_certs
     $(eval $@_FILE = $(1))
 	@sed -i -E "{s/(^patchesStrategicMerge.*)/# \1/}" ${$@_FILE}
 	@sed -i -E "{s/(^-.*webhook_manifests_patch.*)/# \1/}" ${$@_FILE}
-	@sed -i -E "{s/(^ +files.*)/# \1/g}" ${$@_FILE}
-	@sed -i -E "{s/(^ +.*\.pem.*)/# \1/g}" ${$@_FILE}
-	@sed -i -E "{s/(^ +.*\/tls.*)/# \1/g}" ${$@_FILE}
 endef    
 
 .PHONY: enable-certs-rotation
@@ -116,6 +113,11 @@ enable-certs-rotation:
 	@sed -i "9,21 {s/^# //}" kustomization.yaml
 	@sed -i -E 's/^(- coil-.*controller_role\.yaml)/# \1/g' ../config/rbac/kustomization.yaml
 	@sed -i -E 's/^# (- coil-.*controller-certs_role\.yaml)/\1/g' ../config/rbac/kustomization.yaml
+	@touch ../config/default/cert.pem
+	@touch ../config/default/ipam-cert.pem
+	@touch ../config/default/ipam-key.pem
+	@touch ../config/default/egress-cert.pem
+	@touch ../config/default/egress-key.pem
 	@$(call comment_certs,"../config/default/kustomization.yaml")
 	@$(call comment_certs,"../config/default/egress/v4/kustomization.yaml")
 	@$(call comment_certs,"../config/default/egress/v6/kustomization.yaml")
