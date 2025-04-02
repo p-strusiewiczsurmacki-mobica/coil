@@ -10,7 +10,7 @@ You can tweak optional parameters by editing [`kustomization.yaml`](../v2/kustom
 - [Install `kustomize`](#install-kustomize)
 - [TLS certificates](#tls-certificates)
   - [Generate certificates manually](#generate-certificates-manually)
-  - [Enable automatic certs generation](#enable-automatic-certs-generation)
+  - [Enable automatic certs rotation](#enable-automatic-certs-rotation)
 - [Edit `kustomization.yaml`](#edit-kustomizationyaml)
 - [Edit `netconf.json`](#edit-netconfjson)
 - [Compile and apply the manifest](#compile-and-apply-the-manifest)
