@@ -51,12 +51,12 @@ config/default/cert.pem         config/default/egress-key.pem  config/default/ip
 config/default/egress-cert.pem  config/default/ipam-cert.pem   config/default/key.pem
 ```
 
-### Enable automatic certs generation
+### Enable automatic certs rotation
 
-Run `make enable-certs-generation` under `v2/` directory to enable automatic certificate generation in `coil`.
+Run `make enable-certs-rotation` under `v2/` directory to enable automatic certificate generation in `coil`.
 
 ```console
-$ make enable-certs-generation
+$ make enable-certs-rotation
 ```
 
 This will configure the kustomization files that will can be later used by `make install-coil` target.

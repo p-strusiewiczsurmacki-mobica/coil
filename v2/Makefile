@@ -301,8 +301,8 @@ define comment_certs
 	@sed -i -E "{s/(^ +.*\/tls.*)/# \1/g}" ${$@_FILE}
 endef    
 
-.PHONY: enable-certs-generation
-enable-certs-generation:
+.PHONY: enable-certs-rotation
+enable-certs-rotation:
 	@sed -i "23,35 {s/^# //}" kustomization.yaml
 	@sed -i -E 's/^(- coil-.*controller_role\.yaml)/# \1/g' config/rbac/kustomization.yaml
 	@sed -i -E 's/^# (- coil-.*controller-certs_role\.yaml)/\1/g' config/rbac/kustomization.yaml

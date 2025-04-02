@@ -102,7 +102,7 @@ jobs:
         go-version: ${{ env.go-version }}
         cache-dependency-path: "**/go.sum"
     - run: make image
-    - run: make enable-certs-generation
+    - run: make enable-certs-rotation
       working-directory: v2/e2e
     - run: make start KUBERNETES_VERSION=${{ matrix.kindest-node }}
       working-directory: v2/e2e
