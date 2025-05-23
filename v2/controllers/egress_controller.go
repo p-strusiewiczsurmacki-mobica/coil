@@ -220,6 +220,18 @@ func (r *EgressReconciler) reconcilePodTemplate(eg *coilv2.Egress, depl *appsv1.
 		}},
 	}
 
+	testContainer := corev1.Container{
+		Name:  "test",
+		Image: "wbitt/network-multitool",
+		Ports: []corev1.ContainerPort{
+			{
+				ContainerPort: 80,
+			},
+		},
+	}
+
+	podSpec.Containers = append(podSpec.Containers, testContainer)
+
 	podSpec.DeepCopyInto(&target.Spec)
 }
 

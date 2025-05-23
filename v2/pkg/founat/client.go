@@ -5,6 +5,7 @@ import (
 	"net"
 	"sync"
 
+	"github.com/coreos/go-iptables/iptables"
 	"github.com/vishvananda/netlink"
 )
 
@@ -313,6 +314,21 @@ func (c *natClient) AddEgress(link netlink.Link, subnets []*net.IPNet) error {
 		if err := c.addEgress1(link, n); err != nil {
 			return err
 		}
+		family := netlink.FAMILY_V6
+		protocol := iptables.ProtocolIPv6
+		if n.IP.To4() != nil {
+			family = netlink.FAMILY_V4
+			protocol = iptables.ProtocolIPv4
+		}
+
+		gw, err := FindGW(family)
+		if err != nil {
+			return err
+		}
+
+		if err := ConfigureRoutes(gw, protocol); err != nil {
+			return err
+		}
 	}
 
 	for _, r := range deletes {
@@ -370,6 +386,72 @@ func subnetsSet(subnets []*net.IPNet) map[string]struct{} {
 		subnetsSet[subnet.String()] = struct{}{}
 	}
 	return subnetsSet
+}
+
+func FindGW(family int) (*net.IP, error) {
+	routes, err := netlink.RouteList(nil, family)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list routes: %w", err)
+	}
+
+	var dstAddr *net.IPNet
+	src := "0.0.0.0/0"
+	if family == netlink.FAMILY_V6 {
+		src = "::/0"
+	}
+	_, dstAddr, err = net.ParseCIDR(src)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse src address: %w", err)
+	}
+
+	for _, route := range routes {
+		if route.Gw != nil && route.Dst.String() == dstAddr.String() {
+			return &route.Gw, nil
+		}
+	}
+
+	return nil, nil
+}
+
+func ConfigureRoutes(gw *net.IP, family iptables.Protocol) error {
+	links, err := netlink.LinkList()
+	if err != nil {
+		return fmt.Errorf("failed to list links: %w", err)
+	}
+
+	ipt, err := iptables.New(iptables.IPFamily(family))
+	if err != nil {
+		return err
+	}
+
+	for _, link := range links {
+		if err := ipt.Append("mangle", "INPUT",
+			"-m", "conntrack", "--ctstate", "NEW,ESTABLISHED,RELATED", "-j", "CONNMARK",
+			"-i", link.Attrs().Name, "--set-mark", "2"); err != nil {
+			return fmt.Errorf("failed to configure INPUT rule: %w", err)
+		}
+		if err := ipt.Append("mangle", "OUTPUT", "-j", "CONNMARK", "-m", "connmark",
+			"--mark", "2", "--restore-mark"); err != nil {
+			return fmt.Errorf("failed to configure OUTPUT rule: %w", err)
+		}
+		route := &netlink.Route{
+			LinkIndex: link.Attrs().Index,
+			Scope:     netlink.SCOPE_UNIVERSE,
+			Dst:       &net.IPNet{},
+			Gw:        *gw,
+			Table:     1000 + link.Attrs().Index,
+		}
+		if err := netlink.RouteAdd(route); err != nil {
+			return fmt.Errorf("failed to add route %q: %w", route.String(), err)
+		}
+		rule := netlink.NewRule()
+		rule.Mark = 2
+		rule.Table = 1234
+		if err := netlink.RuleAdd(rule); err != nil {
+			return fmt.Errorf("failed to add rule %q: %w", rule.String(), err)
+		}
+	}
+	return nil
 }
 
 func (c *natClient) addEgress1(link netlink.Link, n *net.IPNet) error {

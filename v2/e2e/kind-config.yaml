@@ -5,5 +5,11 @@ networking:
 nodes:
 - role: control-plane
 - role: worker
-- role: worker
-- role: worker
+# - role: worker
+# - role: worker
+containerdConfigPatches:
+- |-
+  [plugins."io.containerd.grpc.v1.cri".registry.mirrors."harbor.local"]
+    endpoint = ["https://harbor.local"]
+  [plugins."io.containerd.grpc.v1.cri".registry.configs."harbor.local".tls]
+    insecure_skip_verify = true 

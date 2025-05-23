@@ -103,10 +103,10 @@ install-coil-egress-dualstack: setup-nodes
 
 .PHONY: setup-nodes
 setup-nodes:
-	$(KUBECTL) taint nodes coil-worker test:NoSchedule
-	$(KUBECTL) taint nodes coil-worker2 test:NoSchedule
-	$(KUBECTL) label nodes coil-worker test=coil
-	$(KUBECTL) label nodes coil-worker2 test=coil
+	# $(KUBECTL) taint nodes coil-worker test:NoSchedule
+	# $(KUBECTL) taint nodes coil-worker2 test:NoSchedule
+	# $(KUBECTL) label nodes coil-worker test=coil
+	# $(KUBECTL) label nodes coil-worker2 test=coil
 
 TEST_IPAM ?= true
 TEST_EGRESS ?= true

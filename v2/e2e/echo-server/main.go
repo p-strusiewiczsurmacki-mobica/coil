@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -33,14 +34,22 @@ func (h echoHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 }
 
 func main() {
+	fmt.Println("Starting")
 	var withRemoteAddress bool
+	var port int
 	flag.BoolVar(&withRemoteAddress, "reply-remote", false, "if set, echo-server will reply with remote host address (default: false)")
+	flag.IntVar(&port, "port", 80, "configure port (default: 80)")
 	flag.Parse()
 
 	s := &http.Server{
+		Addr: fmt.Sprintf(":%d", port),
 		Handler: echoHandler{
 			withRemoteAddrReply: withRemoteAddress,
 		},
 	}
-	s.ListenAndServe()
+
+	if err := s.ListenAndServe(); err != nil {
+		fmt.Println("Error", err.Error())
+	}
+
 }
