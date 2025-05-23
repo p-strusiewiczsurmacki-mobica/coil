@@ -20,6 +20,16 @@ func TestNAT(t *testing.T) {
 	targetNS := getNS(nsTarget)
 	defer targetNS.Close()
 
+	if err := testNatFunc(t, cNS, eNS, targetNS, false); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := testNatFunc(t, cNS, eNS, targetNS, true); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func testNatFunc(t *testing.T, cNS, eNS, targetNS ns.NetNS, originatingOnly bool) error {
 	err := cNS.Do(func(ns.NetNS) error {
 		ft := NewFoUTunnel(5555, net.ParseIP("10.1.1.2"), net.ParseIP("fd01::102"), nil)
 		if err := ft.Init(); err != nil {
@@ -40,11 +50,11 @@ func TestNAT(t *testing.T) {
 			return fmt.Errorf("ft.AddPeer failed for fd01::202: %w", err)
 		}
 
-		err = nc.AddEgress(link4, []*net.IPNet{{IP: net.ParseIP("10.1.3.0"), Mask: net.CIDRMask(24, 32)}})
+		err = nc.AddEgress(link4, []*net.IPNet{{IP: net.ParseIP("10.1.3.0"), Mask: net.CIDRMask(24, 32)}}, originatingOnly)
 		if err != nil {
 			return fmt.Errorf("nc.AddEgress failed for 10.1.3.0/24: %w", err)
 		}
-		err = nc.AddEgress(link6, []*net.IPNet{{IP: net.ParseIP("fd01::300"), Mask: net.CIDRMask(120, 128)}})
+		err = nc.AddEgress(link6, []*net.IPNet{{IP: net.ParseIP("fd01::300"), Mask: net.CIDRMask(120, 128)}}, originatingOnly)
 		if err != nil {
 			return fmt.Errorf("nc.AddEgress failed for fd01::300/120: %w", err)
 		}
@@ -88,8 +98,9 @@ func TestNAT(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	s := &http.Server{}
+	defer s.Close()
 	go targetNS.Do(func(_ ns.NetNS) error {
-		s := &http.Server{}
 		t.Log("httpd running in the target network namespace")
 		s.ListenAndServe()
 		return nil
@@ -111,4 +122,6 @@ func TestNAT(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
+
+	return nil
 }
