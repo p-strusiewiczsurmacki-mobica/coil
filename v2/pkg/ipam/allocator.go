@@ -3,6 +3,7 @@ package ipam
 import (
 	"fmt"
 	"net"
+	"sync"
 
 	"github.com/bits-and-blooms/bitset"
 	"github.com/cybozu-go/netutil"
@@ -13,12 +14,15 @@ type allocator struct {
 	ipv6         *net.IPNet
 	usage        *bitset.BitSet
 	lastAllocIdx int64
+	mu           sync.Mutex
 }
 
 func newAllocator(ipv4, ipv6 *string) *allocator {
 	a := &allocator{
 		lastAllocIdx: -1,
 	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	if ipv4 != nil {
 		ip, n, _ := net.ParseCIDR(*ipv4)
 		if ip.To4() == nil {
@@ -40,14 +44,20 @@ func newAllocator(ipv4, ipv6 *string) *allocator {
 }
 
 func (a *allocator) isFull() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	return a.usage.All()
 }
 
 func (a *allocator) isEmpty() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	return a.usage.None()
 }
 
 func (a *allocator) fill() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	for i := uint(0); i < a.usage.Len(); i++ {
 		a.usage.Set(i)
 	}
@@ -55,6 +65,8 @@ func (a *allocator) fill() {
 }
 
 func (a *allocator) register(ipv4, ipv6 net.IP) (uint, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	if a.ipv4 != nil && a.ipv4.Contains(ipv4) {
 		offset := netutil.IPDiff(a.ipv4.IP, ipv4)
 		if offset < 0 {
@@ -77,6 +89,8 @@ func (a *allocator) register(ipv4, ipv6 net.IP) (uint, bool) {
 }
 
 func (a *allocator) allocate() (ipv4, ipv6 net.IP, idx uint, ok bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	// try to get an usable index from the last allocated index
 	idx, ok = a.usage.NextClear(uint(a.lastAllocIdx + 1))
 	if !ok {
@@ -98,5 +112,7 @@ func (a *allocator) allocate() (ipv4, ipv6 net.IP, idx uint, ok bool) {
 }
 
 func (a *allocator) free(idx uint) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.usage.Clear(idx)
 }

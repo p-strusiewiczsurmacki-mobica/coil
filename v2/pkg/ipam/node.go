@@ -262,10 +262,10 @@ func (n *nodeIPAM) getPool(ctx context.Context, name string) (*nodePool, error) 
 			apiReader:           n.apiReader,
 			scheme:              n.scheme,
 			requestCompletionCh: make(chan *coilv2.BlockRequest),
-			blockAlloc:          make(map[string]*allocator),
 		}
 		n.pools[name] = p
 	}
+
 	if err := p.syncBlock(ctx); err != nil {
 		return nil, err
 	}
@@ -325,7 +325,7 @@ type nodePool struct {
 	requestCompletionCh chan *coilv2.BlockRequest
 
 	mu         sync.Mutex
-	blockAlloc map[string]*allocator
+	blockAlloc sync.Map
 }
 
 // syncBlock synchronizes address block information.
@@ -340,7 +340,8 @@ func (p *nodePool) syncBlock(ctx context.Context) error {
 	}
 
 	for _, block := range blocks.Items {
-		if _, ok := p.blockAlloc[block.Name]; ok {
+		if _, ok := p.blockAlloc.Load(block.Name); ok {
+			p.log.Info("already exists", "block", block.Name)
 			continue
 		}
 
@@ -353,7 +354,8 @@ func (p *nodePool) syncBlock(ctx context.Context) error {
 		if block.Labels[constants.LabelReserved] == "true" {
 			a.fill()
 		}
-		p.blockAlloc[block.Name] = a
+
+		p.blockAlloc.Store(block.Name, a)
 	}
 	return nil
 }
@@ -390,16 +392,26 @@ func (p *nodePool) gc(ctx context.Context) error {
 		return err
 	}
 
-	for name, alloc := range p.blockAlloc {
+	var err error
+	p.blockAlloc.Range(func(key, value any) bool {
+		alloc := value.(*allocator)
 		if !alloc.isEmpty() {
-			continue
+			return true
 		}
 
+		name := key.(string)
+
 		p.log.Info("freeing an unused block", "block", name)
-		if err := p.deleteBlock(ctx, name); err != nil {
-			return err
+		if err = p.deleteBlock(ctx, name); err != nil {
+			return false
 		}
-		delete(p.blockAlloc, name)
+		p.blockAlloc.Delete(name)
+
+		return true
+	})
+
+	if err != nil {
+		return err
 	}
 
 	return nil
@@ -416,7 +428,10 @@ func (p *nodePool) register(containerID, iface string, ipv4, ipv6 net.IP) *alloc
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	for block, alloc := range p.blockAlloc {
+	var alInf *allocInfo
+	p.blockAlloc.Range(func(key, value any) bool {
+		alloc := value.(*allocator)
+		block := key.(string)
 		if idx, ok := alloc.register(ipv4, ipv6); ok {
 			p.log.Info("registered existing IP",
 				"block", block,
@@ -424,14 +439,20 @@ func (p *nodePool) register(containerID, iface string, ipv4, ipv6 net.IP) *alloc
 				"iface", iface,
 				"idx", idx,
 			)
-			return &allocInfo{
+			alInf = &allocInfo{
 				IPv4:      ipv4,
 				IPv6:      ipv6,
 				BlockName: block,
 				Index:     idx,
 				Pool:      p,
 			}
+			return false
 		}
+		return true
+	})
+
+	if alInf != nil {
+		return alInf
 	}
 
 	p.log.Info("warn: failed to register IP",
@@ -466,12 +487,23 @@ func (p *nodePool) allocate(ctx context.Context) (*allocInfo, bool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	for block, alloc := range p.blockAlloc {
+	var alInf *allocInfo
+	var toSync bool
+	var err error
+	var done bool
+	p.blockAlloc.Range(func(key, value any) bool {
+		alloc := value.(*allocator)
 		if alloc.isFull() {
-			continue
+			return true
 		}
+		block := key.(string)
+		alInf, toSync, err = p.allocateFrom(alloc, block, false)
+		done = true
+		return false
+	})
 
-		return p.allocateFrom(alloc, block, false)
+	if done {
+		return alInf, toSync, err
 	}
 
 	p.log.Info("requesting a new block")
@@ -483,7 +515,7 @@ func (p *nodePool) allocate(ctx context.Context) (*allocInfo, bool, error) {
 	// delete existing request, if any
 	req := &coilv2.BlockRequest{}
 	req.Name = reqName
-	err := p.client.Delete(ctx, req)
+	err = p.client.Delete(ctx, req)
 	if err != nil && !apierrors.IsNotFound(err) {
 		return nil, false, fmt.Errorf("failed to delete existing BlockRequest: %w", err)
 	}
@@ -515,10 +547,12 @@ func (p *nodePool) allocate(ctx context.Context) (*allocInfo, bool, error) {
 	if err := p.syncBlock(ctx); err != nil {
 		return nil, false, fmt.Errorf("failed to sync blocks: %w", err)
 	}
-	alloc, ok := p.blockAlloc[block]
+
+	allocData, ok := p.blockAlloc.Load(block)
 	if !ok {
 		panic("bug: " + block)
 	}
+	alloc := allocData.(*allocator)
 	return p.allocateFrom(alloc, block, true)
 }
 
@@ -526,7 +560,11 @@ func (p *nodePool) free(ctx context.Context, blockName string, idx uint) (bool, 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	alloc, ok := p.blockAlloc[blockName]
+	allocData, ok := p.blockAlloc.Load(blockName)
+	if !ok {
+		panic("bug: " + blockName)
+	}
+	alloc, ok := allocData.(*allocator)
 	if !ok {
 		panic("bug: " + blockName)
 	}
@@ -539,6 +577,6 @@ func (p *nodePool) free(ctx context.Context, blockName string, idx uint) (bool, 
 	if err := p.deleteBlock(ctx, blockName); err != nil {
 		return false, fmt.Errorf("failed to free block %s: %w", blockName, err)
 	}
-	delete(p.blockAlloc, blockName)
+	p.blockAlloc.Delete(blockName)
 	return true, nil
 }

@@ -352,8 +352,8 @@ func (pn *podNetwork) SetupIPAM(nsPath, podName, podNS string, conf *PodNetConf)
 			Protocol:  pn.protocolId,
 			Table:     pn.podTableId,
 		})
-		if err != nil {
-			return nil, fmt.Errorf("netlink: failed to add route to %s: %w", conf.IPv6.String(), err)
+		if err != nil && !errors.Is(err, syscall.EEXIST) {
+			return nil, fmt.Errorf("netlink: failed to add route to IPv6 %s: %w", conf.IPv6.String(), err)
 		}
 	}
 	if conf.IPv4 != nil {
@@ -372,8 +372,8 @@ func (pn *podNetwork) SetupIPAM(nsPath, podName, podNS string, conf *PodNetConf)
 			Protocol:  pn.protocolId,
 			Table:     pn.podTableId,
 		})
-		if err != nil {
-			return nil, fmt.Errorf("netlink: failed to add route to %s: %w", conf.IPv4.String(), err)
+		if err != nil && !errors.Is(err, syscall.EEXIST) {
+			return nil, fmt.Errorf("netlink: failed to add route to IPv4 %s: %w", conf.IPv4.String(), err)
 		}
 	}
 
@@ -390,7 +390,7 @@ func (pn *podNetwork) SetupIPAM(nsPath, podName, podNS string, conf *PodNetConf)
 				Scope:     netlink.SCOPE_LINK,
 			})
 			if err != nil {
-				return fmt.Errorf("netlink: failed to add route to %s: %w", pn.hostIPv4.String(), err)
+				return fmt.Errorf("netlink: failed to add route to host %s: %w", pn.hostIPv4.String(), err)
 			}
 			err = netlink.RouteAdd(&netlink.Route{
 				Dst:   defaultGWv4,
