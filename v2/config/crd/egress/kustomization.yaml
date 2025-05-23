@@ -3,6 +3,7 @@
 # It should be run by config/default
 resources:
 # [EGRESS] Following files should be uncommented to enable Egress NAT features.
+- ../bases/coil.cybozu.com_addresspools.yaml
 - ../bases/coil.cybozu.com_egresses.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
