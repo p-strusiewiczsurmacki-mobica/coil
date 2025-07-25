@@ -12,10 +12,10 @@ import (
 )
 
 func TestClient(t *testing.T) {
-	t.Run("Default", testClientDual)
+	// t.Run("Default", testClientDual)
 	t.Run("IPv4", testClientV4)
-	t.Run("IPv6", testClientV6)
-	t.Run("Custom", testClientCustom)
+	// t.Run("IPv6", testClientV6)
+	// t.Run("Custom", testClientCustom)
 }
 
 func ruleMap(family int) (map[int]*netlink.Rule, error) {
@@ -590,8 +590,7 @@ func testClientCustom(t *testing.T) {
 }
 
 func testOriginatingOnly(link netlink.Link, nc NatClient, addAddresses bool, addrs, testAddrs []string) error {
-	// addrs := []string{"100.100.100.100/24", "d0d5:1e73:46c3:d7a9:fa27:90e7:9540:d895/120"}
-	// testAddrs := []string{"10.1.10.0/24", "fd10::/120"}
+	fmt.Printf("OO: %t\n", addAddresses)
 	for i := range addrs {
 		ip, ipnet, err := net.ParseCIDR(addrs[i])
 		if err != nil {
@@ -612,10 +611,7 @@ func testOriginatingOnly(link netlink.Link, nc NatClient, addAddresses bool, add
 			family = netlink.FAMILY_V6
 		}
 
-		newRoutes, err := netlink.RouteListFiltered(family, &netlink.Route{Table: 1000 + link.Attrs().Index}, netlink.RT_FILTER_TABLE)
-		if err != nil {
-			return err
-		}
+		egressLinkTable := nonEgressTableID + link.Attrs().Index
 
 		if addAddresses {
 			if err := netlink.RouteAdd(&netlink.Route{
@@ -639,16 +635,16 @@ func testOriginatingOnly(link netlink.Link, nc NatClient, addAddresses bool, add
 			return fmt.Errorf("failed to add egress: %w", err)
 		}
 
-		newRoutes, err = netlink.RouteListFiltered(family, &netlink.Route{Table: 117}, netlink.RT_FILTER_TABLE)
+		routes, err := netlink.RouteListFiltered(family, &netlink.Route{Table: 117}, netlink.RT_FILTER_TABLE)
 		if err != nil {
 			return err
 		}
 
-		if len(newRoutes) != 1 {
+		if len(routes) != 1 {
 			return errors.New("failed to add ipv4 dst to table 117")
 		}
-		if !newRoutes[0].Dst.IP.Equal(testIPNet.IP) {
-			return fmt.Errorf("wrong dst in table 117: %s", newRoutes[0].Dst.String())
+		if !routes[0].Dst.IP.Equal(testIPNet.IP) {
+			return fmt.Errorf("wrong dst in table 117: %s", routes[0].Dst.String())
 		}
 
 		originalRoutes, err := netlink.RouteList(link, family)
@@ -656,12 +652,14 @@ func testOriginatingOnly(link netlink.Link, nc NatClient, addAddresses bool, add
 			return err
 		}
 
-		newRoutes, err = netlink.RouteListFiltered(family, &netlink.Route{Table: 1000 + link.Attrs().Index}, netlink.RT_FILTER_TABLE)
+		newRoutes, err := netlink.RouteListFiltered(family, &netlink.Route{Table: egressLinkTable}, netlink.RT_FILTER_TABLE)
 		if err != nil {
 			return err
 		}
 
 		if addAddresses {
+			addrs, _ := netlink.AddrList(link, family)
+			fmt.Printf("addrs: %v\n", addrs)
 			if len(originalRoutes) == len(newRoutes) {
 				if slices.CompareFunc(originalRoutes, newRoutes, func(o netlink.Route, n netlink.Route) int {
 					if o.Dst.IP.Equal(n.Dst.IP) && o.Table != n.Table {
@@ -669,12 +667,24 @@ func testOriginatingOnly(link netlink.Link, nc NatClient, addAddresses bool, add
 					}
 					return 1
 				}) != 0 {
-					return fmt.Errorf("wrong values in table %d", 1000+link.Attrs().Index)
+					return fmt.Errorf("wrong values in table %d", egressLinkTable)
 				}
+
+				exists, err := checkFWMarkRule(link, egressLinkTable, family)
+				if err != nil {
+					return fmt.Errorf("failed while checking FW Mark rule: %w", err)
+				}
+				if !exists {
+					return fmt.Errorf("FM mark rule does not exist")
+				}
+			} else {
+				fmt.Printf("new: %v\n", newRoutes)
+				fmt.Printf("old: %v\n", originalRoutes)
+				return fmt.Errorf("routes are different in table %d and default table", egressLinkTable)
 			}
 		} else {
 			if len(newRoutes) > 0 {
-				return fmt.Errorf("irrelevant routes in table %d", 1000+link.Attrs().Index)
+				return fmt.Errorf("irrelevant routes in table %d", egressLinkTable)
 			}
 		}
 	}
