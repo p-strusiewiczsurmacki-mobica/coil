@@ -116,9 +116,12 @@ TEST_EGRESS ?= true
 test: setup-echotest
 	TEST_IPAM=$(TEST_IPAM) TEST_EGRESS=$(TEST_EGRESS) go test -count 1 -v . -args -ginkgo.progress -ginkgo.v
 
-.PHONY: setup-echotest
-setup-echotest:
+.PHONY: build-echotest
+build-echotest:
 	CGO_ENABLED=0 GOARCH=$(ARCH) GOOS=linux go build -o echotest ./echo-server
+
+.PHONY: setup-echotest
+setup-echotest: build-echotest
 	docker cp echotest coil-control-plane:/usr/local/bin
 	rm echotest
 

@@ -15,6 +15,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/prometheus/common/expfmt"
+	"github.com/vishvananda/netlink"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
@@ -22,10 +23,11 @@ import (
 )
 
 var (
-	enableIPv4Tests   = true
-	enableIPv6Tests   = false
-	enableIPAMTests   = true
-	enableEgressTests = true
+	enableIPv4Tests            = true
+	enableIPv6Tests            = false
+	enableIPAMTests            = true
+	enableEgressTests          = true
+	enableOriginatingOnlyTests = true
 )
 
 func ParseEnv() {
@@ -33,6 +35,7 @@ func ParseEnv() {
 	enableIPv6Tests = ParseBool(testIPv6Key)
 	enableIPAMTests = ParseBool(testIPAMKey)
 	enableEgressTests = ParseBool(testEgressKey)
+	enableOriginatingOnlyTests = ParseBool(testOriginatingOnlyKey)
 }
 
 func ParseBool(key string) bool {
@@ -668,7 +671,6 @@ func testEgress() {
 				testNAT(data, "nat-client", o.fakeURL, natAddressesFiltered, enableIPAMTests)
 			}
 		}
-
 	})
 }
 
@@ -719,4 +721,54 @@ func getNATAddresses(name string) []string {
 	}
 
 	return natAddresses
+}
+
+func getLocalIP(ifName string, family int) (*net.IP, *net.IPNet, error) {
+	links, err := netlink.LinkList()
+	if err != nil {
+		return nil, nil, fmt.Errorf("netlink: failed to list links: %w", err)
+	}
+
+	for _, link := range links {
+		if strings.Contains(link.Attrs().Name, ifName) {
+			ip, ipnet, err := getNetwork(link, family)
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to get IPv4 address: %w", err)
+			}
+			if ip == nil {
+				return nil, nil, fmt.Errorf("failed to find IPv4 address on the interface %q", ifName)
+			}
+			return ip, ipnet, nil
+		}
+	}
+
+	return nil, nil, nil
+}
+
+func getLocalIPv4(ifName string) (*net.IP, *net.IPNet, error) {
+	return getLocalIP(ifName, netlink.FAMILY_V4)
+}
+
+func getLocalIPv6(ifName string) (*net.IP, *net.IPNet, error) {
+	return getLocalIP(ifName, netlink.FAMILY_V6)
+}
+
+func getNetwork(link netlink.Link, family int) (*net.IP, *net.IPNet, error) {
+	addrs, err := netlink.AddrList(link, family)
+	if err != nil {
+		return nil, nil, fmt.Errorf("netlink: failed to get addresses for link %q: %w", link.Attrs().Name, err)
+	}
+	if len(addrs) > 0 {
+		for _, a := range addrs {
+			if a.Scope == int(netlink.SCOPE_UNIVERSE) {
+				ip, cidr, err := net.ParseCIDR(a.IPNet.String())
+				if err != nil {
+					return nil, nil, fmt.Errorf("failed to parse CIDR: %w", err)
+				}
+				return &ip, cidr, nil
+			}
+		}
+	}
+
+	return nil, nil, nil
 }
