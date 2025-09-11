@@ -18,8 +18,7 @@ const (
 	testIPAMKey   = "TEST_IPAM"
 	testEgressKey = "TEST_EGRESS"
 
-	testOriginatingOnlyKey = "TEST_ORIGINATIGNONLY"
-	networkInterfaceKey    = "NETWORK_INTERFACE"
+	networkInterfaceKey = "NETWORK_INTERFACE"
 )
 
 var _ = Describe("coil controllers", func() {
