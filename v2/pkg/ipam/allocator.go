@@ -3,6 +3,7 @@ package ipam
 import (
 	"fmt"
 	"net"
+	"sync"
 
 	"github.com/bits-and-blooms/bitset"
 	"github.com/cybozu-go/netutil"
@@ -13,6 +14,7 @@ type allocator struct {
 	ipv6         *net.IPNet
 	usage        *bitset.BitSet
 	lastAllocIdx int64
+	mtx          sync.Mutex
 }
 
 func newAllocator(ipv4, ipv6 *string) *allocator {
@@ -51,10 +53,14 @@ func (a *allocator) fill() {
 	for i := uint(0); i < a.usage.Len(); i++ {
 		a.usage.Set(i)
 	}
+	a.mtx.Lock()
+	defer a.mtx.Unlock()
 	a.lastAllocIdx = int64(a.usage.Len() - 1)
 }
 
 func (a *allocator) register(ipv4, ipv6 net.IP) (uint, bool) {
+	a.mtx.Lock()
+	defer a.mtx.Unlock()
 	if a.ipv4 != nil && a.ipv4.Contains(ipv4) {
 		offset := netutil.IPDiff(a.ipv4.IP, ipv4)
 		if offset < 0 {
@@ -78,6 +84,8 @@ func (a *allocator) register(ipv4, ipv6 net.IP) (uint, bool) {
 
 func (a *allocator) allocate() (ipv4, ipv6 net.IP, idx uint, ok bool) {
 	// try to get an usable index from the last allocated index
+	a.mtx.Lock()
+	defer a.mtx.Unlock()
 	idx, ok = a.usage.NextClear(uint(a.lastAllocIdx + 1))
 	if !ok {
 		// if an usable index is not found, try to get from index 0
