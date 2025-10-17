@@ -777,7 +777,7 @@ func testCoild() {
 }
 
 func testNAT(data []byte, clientPod, fakeURL string, natAddresses []string, ipamEnabled bool) {
-	resp := kubectlSafe(data, "exec", "-i", clientPod, "--", "curl", "--max-time", "30", "-sf", "-T", "-", fakeURL)
+	resp := kubectlSafe(data, "exec", "-i", clientPod, "--", "curl", "--max-time", "5", "-sf", "-T", "-", fakeURL)
 
 	if !ipamEnabled {
 		respStr := string(resp)
