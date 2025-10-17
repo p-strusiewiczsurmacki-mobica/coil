@@ -873,23 +873,16 @@ func checkEgressConnection(address string, pod *corev1.Pod, port string) error {
 		return fmt.Errorf("failed to parse address %q", address)
 	}
 
-	isV6 := !(ip.To4() != nil)
-	separator := ":"
-	if !isV6 {
-		separator = "."
-	}
-
 	By("get node's IP addresses")
 	var nodeIP string
-	ipSplit := strings.Split(address, separator)
-	command := fmt.Sprintf("ip addr show dev eth0 | grep %s | cut -d \" \" -f 6 | cut -d \"/\" -f 1 ", ipSplit[0])
+	command := fmt.Sprintf("ip -j addr show dev enp1s0 | jq '.[].addr_info[] | .local |  match(\"%s.*\") | .string)'", address)
 	nodeByte, err := runOnNode("coil-control-plane", "bash", "-c", command)
 	Expect(err).ToNot(HaveOccurred())
 	nodeIP = strings.Trim(string(nodeByte), " \n")
 
 	By("test egress connection to IP " + nodeIP)
-	if isV6 {
-		nodeIP = fmt.Sprintf("[%s]", nodeIP)
+	if !(ip.To4() != nil) {
+		nodeIP = fmt.Sprintf("[%s]", nodeIP) // IPv6 address
 	}
 	result := runOnPod(pod.Namespace, pod.Name, "curl", "--max-time", "3", fmt.Sprintf("http://%s:%s", nodeIP, port))
 	incomingAddr := string(result)

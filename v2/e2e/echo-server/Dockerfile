@@ -1,4 +1,4 @@
-FROM golang:1.24-alpine3.22 AS build-env
+FROM ghcr.io/cybozu/golang:1.24-noble AS build-env
 
 ARG TARGETARCH
 
@@ -7,9 +7,6 @@ WORKDIR /workdir
 
 RUN GOARCH=${TARGETARCH} CGO_ENABLED=0 GOOS=linux go build -o echotest main.go
 
-FROM alpine:3.22
-
-RUN apk add --update curl \
-    && rm -rf /var/cache/apk/*
+FROM ghcr.io/cybozu/ubuntu:24.04 
 
 COPY --from=build-env /workdir/echotest /usr/local/bin/echotest
