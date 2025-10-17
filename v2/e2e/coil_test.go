@@ -823,10 +823,10 @@ func getLocalIP(ifName string, family int) (*net.IP, *net.IPNet, error) {
 		if strings.Contains(link.Attrs().Name, ifName) {
 			ip, ipnet, err := getNetwork(link, family)
 			if err != nil {
-				return nil, nil, fmt.Errorf("failed to get IPv4 address: %w", err)
+				return nil, nil, fmt.Errorf("failed to get address: %w", err)
 			}
 			if ip == nil {
-				return nil, nil, fmt.Errorf("failed to find IPv4 address on the interface %q", ifName)
+				return nil, nil, fmt.Errorf("failed to find address on the interface %q", ifName)
 			}
 			return ip, ipnet, nil
 		}
@@ -974,7 +974,7 @@ func deployEgress(egressData egressTemplateData, curDir, tmpDir string) {
 	err = egressTemplateExec.Execute(egressFile, egressData)
 	Expect(err).ToNot(HaveOccurred())
 
-	By(fmt.Sprintf("creating pod %q", egressData.EgressName))
+	By(fmt.Sprintf("creating egress %q", egressData.EgressName))
 	kubectlSafe(nil, "apply", "-f", egressFilepath)
 
 	By(fmt.Sprintf("checking if %q is ready", egressData.EgressName))
