@@ -37,14 +37,15 @@ import (
 
 // GWNets represents networks for a destination.
 type GWNets struct {
-	Gateway   net.IP
-	Networks  []*net.IPNet
-	SportAuto bool
+	Gateway         net.IP
+	Networks        []*net.IPNet
+	SportAuto       bool
+	OriginatingOnly bool
 }
 
 // NATSetup represents a NAT setup function for Pods.
 type NATSetup interface {
-	Hook([]GWNets, *zap.Logger) func(ipv4, ipv6 net.IP) error
+	Hook([]GWNets, string, *zap.Logger) func(ipv4, ipv6 net.IP) error
 }
 
 // NewNATSetup creates a NATSetup using founat package.
@@ -57,7 +58,7 @@ type natSetup struct {
 	port int
 }
 
-func (n natSetup) Hook(l []GWNets, log *zap.Logger) func(ipv4, ipv6 net.IP) error {
+func (n natSetup) Hook(l []GWNets, backend string, log *zap.Logger) func(ipv4, ipv6 net.IP) error {
 	return func(ipv4, ipv6 net.IP) error {
 		ft := founat.NewFoUTunnel(n.port, ipv4, ipv6, func(message string) {
 			log.Sugar().Info(message)
@@ -66,7 +67,7 @@ func (n natSetup) Hook(l []GWNets, log *zap.Logger) func(ipv4, ipv6 net.IP) erro
 			return err
 		}
 
-		cl := founat.NewNatClient(ipv4, ipv6, nil, func(message string) {
+		cl := founat.NewNatClient(ipv4, ipv6, nil, backend, func(message string) {
 			log.Sugar().Info(message)
 		})
 		if err := cl.Init(); err != nil {
@@ -83,7 +84,7 @@ func (n natSetup) Hook(l []GWNets, log *zap.Logger) func(ipv4, ipv6 net.IP) erro
 			if err != nil {
 				return err
 			}
-			if err := cl.AddEgress(link, gwn.Networks); err != nil {
+			if err := cl.AddEgress(link, gwn.Networks, gwn.OriginatingOnly); err != nil {
 				return err
 			}
 		}
@@ -94,7 +95,8 @@ func (n natSetup) Hook(l []GWNets, log *zap.Logger) func(ipv4, ipv6 net.IP) erro
 
 // NewCoildServer returns an implementation of cnirpc.CNIServer for coild.
 func NewCoildServer(l net.Listener, mgr manager.Manager, nodeIPAM ipam.NodeIPAM, podNet nodenet.PodNetwork, setup NATSetup, cfg *config.Config, logger *zap.Logger,
-	aliasFunc func(conf *nodenet.PodNetConf, pod *corev1.Pod, ifName string) error) manager.Runnable {
+	aliasFunc func(conf *nodenet.PodNetConf, pod *corev1.Pod, ifName string) error,
+	tracker map[string]map[string]*coilv2.Egress) manager.Runnable {
 	return &coildServer{
 		listener:  l,
 		apiReader: mgr.GetAPIReader(),
@@ -105,6 +107,7 @@ func NewCoildServer(l net.Listener, mgr manager.Manager, nodeIPAM ipam.NodeIPAM,
 		logger:    logger,
 		cfg:       cfg,
 		aliasFunc: aliasFunc,
+		tracker:   tracker,
 	}
 }
 
@@ -130,6 +133,7 @@ type coildServer struct {
 	logger    *zap.Logger
 	cfg       *config.Config
 	aliasFunc func(conf *nodenet.PodNetConf, pod *corev1.Pod, ifName string) error
+	tracker   map[string]map[string]*coilv2.Egress
 }
 
 var _ manager.LeaderElectionRunnable = &coildServer{}
@@ -438,6 +442,20 @@ func (s *coildServer) getHook(ctx context.Context, pod *corev1.Pod) (nodenet.Set
 				"failed to get Service "+n.String(), err.Error())
 		}
 
+		if _, ok := s.tracker[namespacedName(pod)]; !ok {
+			s.tracker[namespacedName(pod)] = make(map[string]*coilv2.Egress)
+		}
+
+		s.tracker[namespacedName(pod)][namespacedName(eg)] = eg
+
+		enableOriginatingOnly := false
+		for _, v := range s.tracker[namespacedName(pod)] {
+			if v.Spec.OriginatingOnly {
+				enableOriginatingOnly = true
+				break
+			}
+		}
+
 		for _, clusterIP := range svc.Spec.ClusterIPs {
 			svcIP := net.ParseIP(clusterIP)
 			if svcIP == nil {
@@ -457,7 +475,8 @@ func (s *coildServer) getHook(ctx context.Context, pod *corev1.Pod) (nodenet.Set
 			}
 
 			if len(subnets) > 0 {
-				gwlist = append(gwlist, GWNets{Gateway: svcIP, Networks: subnets, SportAuto: eg.Spec.FouSourcePortAuto})
+				gwlist = append(gwlist, GWNets{Gateway: svcIP, Networks: subnets,
+					SportAuto: eg.Spec.FouSourcePortAuto, OriginatingOnly: enableOriginatingOnly})
 			}
 		}
 	}
@@ -465,9 +484,13 @@ func (s *coildServer) getHook(ctx context.Context, pod *corev1.Pod) (nodenet.Set
 	if len(gwlist) > 0 {
 		logger = logger.With(zap.String("pod_name", pod.Name), zap.String("pod_namespace", pod.Namespace))
 		logger.Sugar().Infof("gwlist: %v", gwlist)
-		return s.natSetup.Hook(gwlist, logger), nil
+		return s.natSetup.Hook(gwlist, s.cfg.Backend, logger), nil
 	}
 	return nil, nil
+}
+
+func namespacedName(o client.Object) string {
+	return fmt.Sprintf("%s/%s", o.GetNamespace(), o.GetName())
 }
 
 // ref: https://github.com/grpc-ecosystem/go-grpc-middleware/blob/71d7422112b1d7fadd4b8bf12a6f33ba6d22e98e/interceptors/logging/examples/zap/example_test.go#L17

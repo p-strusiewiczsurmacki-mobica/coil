@@ -162,7 +162,7 @@ type mockNATSetup struct {
 	gwnets []GWNets
 }
 
-func (ns *mockNATSetup) Hook(gwnets []GWNets, _ *uberzap.Logger) func(ipv4, ipv6 net.IP) error {
+func (ns *mockNATSetup) Hook(gwnets []GWNets, _ string, _ *uberzap.Logger) func(ipv4, ipv6 net.IP) error {
 	ns.gwnets = gwnets
 	return nil
 }
@@ -240,7 +240,9 @@ var _ = Describe("Coild server", func() {
 			AddressBlockGCInterval: 10 * time.Second,
 		}
 
-		serv := NewCoildServer(l, mgr, nodeIPAM, podNet, natsetup, cfg, logger, mockAlias)
+		tracker := make(map[string]map[string]*coilv2.Egress)
+
+		serv := NewCoildServer(l, mgr, nodeIPAM, podNet, natsetup, cfg, logger, mockAlias, tracker)
 		err = mgr.Add(serv)
 		Expect(err).ToNot(HaveOccurred())
 
