@@ -709,7 +709,50 @@ func testEgress() {
 		}
 
 		By("testing ingress connectivity")
-		Expect(checkIngressConnections(egressData)).To(Succeed())
+		errs := checkIngressConnections(egressData)
+		Expect(errs).To(BeEmpty())
+
+		egressData.OriginatingOnly = false
+
+		deployEgress(egressData, curDir, tmpDir)
+		time.Sleep(time.Second)
+
+		expectedErr := 0
+		if enableIPv4Tests {
+			expectedErr++
+			By("testing IPv4 egress connectivity")
+			Expect(checkEgressConnection(egressData.IPv4Addr, pod, egressData.Port)).To(Succeed())
+		}
+
+		if enableIPv6Tests {
+			expectedErr++
+			By("testing IPv6 egress connectivity")
+			Expect(checkEgressConnection(egressData.IPv6Addr, pod, egressData.Port)).To(Succeed())
+		}
+
+		By("should fail ingress connection if originatingOnly was changed to false")
+		errs = checkIngressConnections(egressData)
+		Expect(len(errs)).To(Equal(expectedErr))
+
+		egressData.OriginatingOnly = true
+
+		deployEgress(egressData, curDir, tmpDir)
+		time.Sleep(time.Second)
+
+		if enableIPv4Tests {
+			By("testing IPv4 egress connectivity")
+			Expect(checkEgressConnection(egressData.IPv4Addr, pod, egressData.Port)).To(Succeed())
+		}
+
+		if enableIPv6Tests {
+			By("testing IPv6 egress connectivity")
+			Expect(checkEgressConnection(egressData.IPv6Addr, pod, egressData.Port)).To(Succeed())
+		}
+
+		By("testing ingress connectivity")
+		errs = checkIngressConnections(egressData)
+		Expect(errs).To(BeEmpty())
+
 	})
 
 	It("should fail ingress connection if originatingOnly is not used", func() {
@@ -732,15 +775,19 @@ func testEgress() {
 
 		pod := deployClient(egressData, curDir, tmpDir)
 
+		expectedErr := 0
 		if enableIPv4Tests {
+			expectedErr++
 			Expect(checkEgressConnection(egressData.IPv4Addr, pod, egressData.Port)).To(Succeed())
 		}
 
 		if enableIPv6Tests {
+			expectedErr++
 			Expect(checkEgressConnection(egressData.IPv6Addr, pod, egressData.Port)).To(Succeed())
 		}
 
-		Expect(checkIngressConnections(egressData)).ToNot(Succeed())
+		errs := checkIngressConnections(egressData)
+		Expect(len(errs)).To(Equal(expectedErr))
 	})
 }
 
@@ -890,7 +937,7 @@ func checkEgressConnection(address string, pod *corev1.Pod, port string) error {
 	return nil
 }
 
-func checkIngressConnections(egressData egressTemplateData) error {
+func checkIngressConnections(egressData egressTemplateData) []error {
 	By("get client pod's data")
 	pod := &corev1.Pod{}
 	Eventually(func() bool {
@@ -901,6 +948,7 @@ func checkIngressConnections(egressData egressTemplateData) error {
 		return strings.Contains(pod.Name, egressData.PodName)
 	}).Should(BeTrue())
 
+	var errs []error
 	for _, ip := range pod.Status.PodIPs {
 		tmpIP := ip.IP
 		addr := net.ParseIP(tmpIP)
@@ -912,14 +960,14 @@ func checkIngressConnections(egressData egressTemplateData) error {
 		}
 
 		if (!isv6 && enableIPv4Tests) || (isv6 && enableIPv6Tests) {
-			By("test connection to client pod on address " + ip.IP)
+			By("test connection to client pod on address " + tmpIP)
 			if _, err := runOnNode("coil-control-plane", "curl", "--max-time", "3", fmt.Sprintf("http://%s:%s", tmpIP, egressData.Port)); err != nil {
-				return err
+				errs = append(errs, err)
 			}
 		}
 	}
 
-	return nil
+	return errs
 }
 
 func prepareEgressData(originatingOnly bool, port string) egressTemplateData {
