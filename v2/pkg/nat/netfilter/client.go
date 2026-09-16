@@ -23,6 +23,11 @@ const (
 	ncWidePrio      = 2100
 )
 
+// MaxInClusterNetworks is the maximum number of in-cluster networks (per IP family)
+// that NatClient can install rules for. Each network gets its own rule priority
+// starting at ncLocalPrioBase, and they must not collide with ncWidePrio.
+const MaxInClusterNetworks = ncWidePrio - ncLocalPrioBase
+
 // Table IDs
 const (
 	ncProtocolID    = 30
@@ -73,19 +78,27 @@ type NatClient struct {
 	mu sync.Mutex
 }
 
-func NewNatClient(ipv4, ipv6 net.IP, podNodeNet []*net.IPNet, backend string, logFunc func(string)) *NatClient {
-	var v4InCluster, v6InCluster []*net.IPNet
-	if len(podNodeNet) > 0 {
-		for _, n := range podNodeNet {
-			if n.IP.To4() != nil {
-				v4InCluster = append(v4InCluster, n)
-			} else {
-				v6InCluster = append(v6InCluster, n)
-			}
+// NewNatClient creates a new NatClient.
+//
+// clusterNetworks overrides the default in-cluster networks (RFC1918 for IPv4,
+// fc00::/7 for IPv6) that are excluded from egress NAT and routed via the main
+// table instead. The override is per IP family: if clusterNetworks contains at
+// least one network of a given family, it replaces the default for that family
+// only; the other family keeps its default. This lets clusters using globally
+// routable IPv6 addresses (or non-RFC1918 IPv4 ranges) keep intra-cluster
+// traffic out of the NAT tunnel even when an Egress destination such as ::/0
+// or 0.0.0.0/0 is configured.
+func NewNatClient(ipv4, ipv6 net.IP, clusterNetworks *ClusterNetworks, backend string, logFunc func(string)) *NatClient {
+	v4InCluster := v4PrivateList
+	v6InCluster := v6PrivateList
+
+	if clusterNetworks != nil {
+		if len(clusterNetworks.v4) > 0 {
+			v4InCluster = clusterNetworks.v4
 		}
-	} else {
-		v4InCluster = v4PrivateList
-		v6InCluster = v6PrivateList
+		if len(clusterNetworks.v6) > 0 {
+			v6InCluster = clusterNetworks.v6
+		}
 	}
 
 	nc := &NatClient{
