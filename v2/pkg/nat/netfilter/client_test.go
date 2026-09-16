@@ -126,6 +126,45 @@ func TestNewNatClient(t *testing.T) {
 				logFunc:     nil,
 			},
 		},
+		{
+			// Only an IPv6 override is given (e.g. a cluster using globally
+			// routable IPv6 addresses). The IPv4 default must be untouched.
+			name: "With only IPv6 override falls back to IPv4 default",
+			args: args{
+				ipv4:       ipv4,
+				ipv6:       ipv6,
+				podNodeNet: v6InCluster,
+				backend:    backend,
+				logFunc:    nil,
+			},
+			want: &NatClient{
+				ipv4:        ipv4,
+				ipv6:        ipv6,
+				v4InCluster: v4PrivateList,
+				v6InCluster: v6InCluster,
+				backend:     backend,
+				logFunc:     nil,
+			},
+		},
+		{
+			// Only an IPv4 override is given. The IPv6 default must be untouched.
+			name: "With only IPv4 override falls back to IPv6 default",
+			args: args{
+				ipv4:       ipv4,
+				ipv6:       ipv6,
+				podNodeNet: v4InCluster,
+				backend:    backend,
+				logFunc:    nil,
+			},
+			want: &NatClient{
+				ipv4:        ipv4,
+				ipv6:        ipv6,
+				v4InCluster: v4InCluster,
+				v6InCluster: v6PrivateList,
+				backend:     backend,
+				logFunc:     nil,
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -200,6 +239,19 @@ func TestNatClient_Init(t *testing.T) {
 				podNodeNet: podNodeNet,
 				backend:    backend,
 				logFunc:    nil,
+			},
+			wantErr: false,
+		},
+		{
+			name: "With IPv6-only override",
+			args: &ncArgs{
+				ipv4: ipv4,
+				ipv6: ipv6,
+				podNodeNet: []*net.IPNet{
+					{IP: net.ParseIP("fd02::"), Mask: net.CIDRMask(16, 128)},
+				},
+				backend: backend,
+				logFunc: nil,
 			},
 			wantErr: false,
 		},
@@ -414,6 +466,23 @@ func TestNatClient_SyncNat(t *testing.T) {
 				ipv6:       ipv6,
 				podNodeNet: podNodeNet,
 				logFunc:    nil,
+			},
+			wantErr: false,
+		},
+		{
+			// Regression test for the per-family fallback: an IPv6-only
+			// override (e.g. a cluster using globally routable IPv6
+			// addresses) must not disturb the IPv4 default (RFC1918), and a
+			// wide destination like ::/0 must still land in the wide table
+			// rather than being swallowed by the override.
+			name: "With IPv6-only override",
+			fields: fields{
+				ipv4: ipv4,
+				ipv6: ipv6,
+				podNodeNet: []*net.IPNet{
+					{IP: net.ParseIP("fd02::"), Mask: net.CIDRMask(16, 128)},
+				},
+				logFunc: nil,
 			},
 			wantErr: false,
 		},

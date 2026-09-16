@@ -28,6 +28,11 @@ type EgressWatcher struct {
 	EgressPort      int
 	Backend         string
 	OriginatingOnly bool
+	// ClusterNetworks overrides the default in-cluster networks excluded from
+	// egress NAT (see netfilter.NewNatClient). It must be kept in sync with
+	// the value passed to runners.NewNATSetup, since both must agree on which
+	// destinations use the narrow (117) vs wide (118) routing table.
+	ClusterNetworks []*net.IPNet
 }
 
 // +kubebuilder:rbac:groups=coil.cybozu.com,resources=egresses,verbs=get;list;watch
@@ -204,7 +209,7 @@ func (r *EgressWatcher) hook(gwn gwNets, log *logr.Logger) func(ipv4, ipv6 net.I
 		if !ft.IsInitialized() {
 			return errors.New("fouTunnel hasn't been initialized")
 		}
-		cl := netfilter.NewNatClient(ipv4, ipv6, nil, r.Backend, func(message string) {
+		cl := netfilter.NewNatClient(ipv4, ipv6, r.ClusterNetworks, r.Backend, func(message string) {
 			log.Info(message)
 		})
 		initialized, err := cl.IsInitialized()
