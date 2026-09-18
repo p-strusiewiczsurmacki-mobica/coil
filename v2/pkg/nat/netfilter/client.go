@@ -89,7 +89,6 @@ type NatClient struct {
 // traffic out of the NAT tunnel even when an Egress destination such as ::/0
 // or 0.0.0.0/0 is configured.
 func NewNatClient(ipv4, ipv6 net.IP, clusterNetworks *ClusterNetworks, backend string, logFunc func(string)) *NatClient {
-
 	v4InCluster := v4PrivateList
 	if len(clusterNetworks.v4) > 0 {
 		v4InCluster = clusterNetworks.v4
