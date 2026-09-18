@@ -43,19 +43,6 @@ func init() {
 	// +kubebuilder:scaffold:scheme
 }
 
-// parseClusterNetworks parses --cluster-networks CIDR strings into net.IPNet values.
-func parseClusterNetworks(cidrs []string) ([]*net.IPNet, error) {
-	var nets []*net.IPNet
-	for _, s := range cidrs {
-		_, n, err := net.ParseCIDR(s)
-		if err != nil {
-			return nil, fmt.Errorf("invalid CIDR %q: %w", s, err)
-		}
-		nets = append(nets, n)
-	}
-	return nets, nil
-}
-
 func subMain() error {
 	// coild needs a raw zap logger for grpc_zip.
 	zapLogger := zap.NewRaw(zap.UseFlagOptions(&cfg.ZapOpts))
@@ -75,14 +62,14 @@ func subMain() error {
 		return errors.New("configuration error: both IPAM and egress are disabled")
 	}
 
-	clusterNetworks, err := parseClusterNetworks(cfg.ClusterNetworks)
+	clusterNetworks, err := netfilter.ParseClusterNetworks(cfg.ClusterNetworks)
 	if err != nil {
 		return fmt.Errorf("invalid --cluster-networks: %w", err)
 	}
 	if err := netfilter.ValidateClusterNetworks(clusterNetworks); err != nil {
 		return fmt.Errorf("invalid --cluster-networks: %w", err)
 	}
-	if len(clusterNetworks) > 0 {
+	if !clusterNetworks.IsEmpty() {
 		setupLog.Info("using custom in-cluster networks for egress NAT", "networks", cfg.ClusterNetworks)
 	}
 

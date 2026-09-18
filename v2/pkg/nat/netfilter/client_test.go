@@ -30,10 +30,15 @@ const (
 func TestNewNatClient(t *testing.T) {
 	ipv4 := net.ParseIP("10.1.1.1")
 	ipv6 := net.ParseIP("fd02::1")
-	podNodeNet := []*net.IPNet{
+
+	netsv4 := []*net.IPNet{
 		{IP: net.ParseIP("192.168.10.0"), Mask: net.CIDRMask(24, 32)},
+	}
+	netsv6 := []*net.IPNet{
 		{IP: net.ParseIP("fd02::"), Mask: net.CIDRMask(16, 128)},
 	}
+	cNets := &ClusterNetworks{netsv4, netsv6}
+
 	v4InCluster := []*net.IPNet{
 		{IP: net.ParseIP("192.168.10.0"), Mask: net.CIDRMask(24, 32)},
 	}
@@ -43,11 +48,11 @@ func TestNewNatClient(t *testing.T) {
 	backend := constants.EgressBackendIPTables
 
 	type args struct {
-		ipv4       net.IP
-		ipv6       net.IP
-		podNodeNet []*net.IPNet
-		backend    string
-		logFunc    func(string)
+		ipv4    net.IP
+		ipv6    net.IP
+		cNets   *ClusterNetworks
+		backend string
+		logFunc func(string)
 	}
 	tests := []struct {
 		name string
@@ -57,11 +62,11 @@ func TestNewNatClient(t *testing.T) {
 		{
 			name: "IPv4 and IPv6",
 			args: args{
-				ipv4:       ipv4,
-				ipv6:       ipv6,
-				podNodeNet: nil,
-				backend:    backend,
-				logFunc:    nil,
+				ipv4:    ipv4,
+				ipv6:    ipv6,
+				cNets:   nil,
+				backend: backend,
+				logFunc: nil,
 			},
 			want: &NatClient{
 				ipv4:        ipv4,
@@ -75,11 +80,11 @@ func TestNewNatClient(t *testing.T) {
 		{
 			name: "IPv4",
 			args: args{
-				ipv4:       ipv4,
-				ipv6:       nil,
-				podNodeNet: nil,
-				backend:    backend,
-				logFunc:    nil,
+				ipv4:    ipv4,
+				ipv6:    nil,
+				cNets:   nil,
+				backend: backend,
+				logFunc: nil,
 			},
 			want: &NatClient{
 				ipv4:        ipv4,
@@ -93,11 +98,11 @@ func TestNewNatClient(t *testing.T) {
 		{
 			name: "IPv6",
 			args: args{
-				ipv4:       nil,
-				ipv6:       ipv6,
-				podNodeNet: nil,
-				backend:    backend,
-				logFunc:    nil,
+				ipv4:    nil,
+				ipv6:    ipv6,
+				cNets:   nil,
+				backend: backend,
+				logFunc: nil,
 			},
 			want: &NatClient{
 				ipv4:        nil,
@@ -111,11 +116,11 @@ func TestNewNatClient(t *testing.T) {
 		{
 			name: "With podNodeNet",
 			args: args{
-				ipv4:       ipv4,
-				ipv6:       ipv6,
-				podNodeNet: podNodeNet,
-				backend:    backend,
-				logFunc:    nil,
+				ipv4:    ipv4,
+				ipv6:    ipv6,
+				cNets:   cNets,
+				backend: backend,
+				logFunc: nil,
 			},
 			want: &NatClient{
 				ipv4:        ipv4,
@@ -131,11 +136,13 @@ func TestNewNatClient(t *testing.T) {
 			// routable IPv6 addresses). The IPv4 default must be untouched.
 			name: "With only IPv6 override falls back to IPv4 default",
 			args: args{
-				ipv4:       ipv4,
-				ipv6:       ipv6,
-				podNodeNet: v6InCluster,
-				backend:    backend,
-				logFunc:    nil,
+				ipv4: ipv4,
+				ipv6: ipv6,
+				cNets: &ClusterNetworks{
+					[]*net.IPNet{}, netsv6,
+				},
+				backend: backend,
+				logFunc: nil,
 			},
 			want: &NatClient{
 				ipv4:        ipv4,
@@ -150,11 +157,13 @@ func TestNewNatClient(t *testing.T) {
 			// Only an IPv4 override is given. The IPv6 default must be untouched.
 			name: "With only IPv4 override falls back to IPv6 default",
 			args: args{
-				ipv4:       ipv4,
-				ipv6:       ipv6,
-				podNodeNet: v4InCluster,
-				backend:    backend,
-				logFunc:    nil,
+				ipv4: ipv4,
+				ipv6: ipv6,
+				cNets: &ClusterNetworks{
+					cNets.v4, []*net.IPNet{},
+				},
+				backend: backend,
+				logFunc: nil,
 			},
 			want: &NatClient{
 				ipv4:        ipv4,
@@ -169,7 +178,7 @@ func TestNewNatClient(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := NewNatClient(tt.args.ipv4, tt.args.ipv6, tt.args.podNodeNet, tt.args.backend, tt.args.logFunc)
+			got := NewNatClient(tt.args.ipv4, tt.args.ipv6, tt.args.cNets, tt.args.backend, tt.args.logFunc)
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("NewNatClient() got = %v, want %v", got, tt.want)
 			}
@@ -180,18 +189,23 @@ func TestNewNatClient(t *testing.T) {
 func TestNatClient_Init(t *testing.T) {
 	ipv4 := net.ParseIP("10.1.1.1")
 	ipv6 := net.ParseIP("fd02::1")
-	podNodeNet := []*net.IPNet{
+
+	netsv4 := []*net.IPNet{
 		{IP: net.ParseIP("192.168.10.0"), Mask: net.CIDRMask(24, 32)},
+	}
+	netsv6 := []*net.IPNet{
 		{IP: net.ParseIP("fd02::"), Mask: net.CIDRMask(16, 128)},
 	}
+	cNets := &ClusterNetworks{netsv4, netsv6}
+
 	backend := constants.EgressBackendIPTables
 
 	type ncArgs struct {
-		ipv4       net.IP
-		ipv6       net.IP
-		podNodeNet []*net.IPNet
-		backend    string
-		logFunc    func(string)
+		ipv4    net.IP
+		ipv6    net.IP
+		cNets   *ClusterNetworks
+		backend string
+		logFunc func(string)
 	}
 	tests := []struct {
 		name    string
@@ -201,55 +215,53 @@ func TestNatClient_Init(t *testing.T) {
 		{
 			name: "IPv4 and IPv6",
 			args: &ncArgs{
-				ipv4:       ipv4,
-				ipv6:       ipv6,
-				podNodeNet: nil,
-				backend:    backend,
-				logFunc:    nil,
+				ipv4:    ipv4,
+				ipv6:    ipv6,
+				cNets:   nil,
+				backend: backend,
+				logFunc: nil,
 			},
 			wantErr: false,
 		},
 		{
 			name: "IPv4",
 			args: &ncArgs{
-				ipv4:       ipv4,
-				ipv6:       nil,
-				podNodeNet: nil,
-				backend:    backend,
-				logFunc:    nil,
+				ipv4:    ipv4,
+				ipv6:    nil,
+				cNets:   nil,
+				backend: backend,
+				logFunc: nil,
 			},
 			wantErr: false,
 		},
 		{
 			name: "IPv6",
 			args: &ncArgs{
-				ipv4:       nil,
-				ipv6:       ipv6,
-				podNodeNet: nil,
-				backend:    backend,
-				logFunc:    nil,
+				ipv4:    nil,
+				ipv6:    ipv6,
+				cNets:   nil,
+				backend: backend,
+				logFunc: nil,
 			},
 			wantErr: false,
 		},
 		{
 			name: "With podNodeNet",
 			args: &ncArgs{
-				ipv4:       ipv4,
-				ipv6:       ipv6,
-				podNodeNet: podNodeNet,
-				backend:    backend,
-				logFunc:    nil,
+				ipv4:    ipv4,
+				ipv6:    ipv6,
+				cNets:   cNets,
+				backend: backend,
+				logFunc: nil,
 			},
 			wantErr: false,
 		},
 		{
 			name: "With IPv6-only override",
 			args: &ncArgs{
-				ipv4: ipv4,
-				ipv6: ipv6,
-				podNodeNet: []*net.IPNet{
-					{IP: net.ParseIP("fd02::"), Mask: net.CIDRMask(16, 128)},
-				},
+				ipv4:    ipv4,
+				ipv6:    ipv6,
+				cNets:   &ClusterNetworks{[]*net.IPNet{}, netsv6},
 				backend: backend,
 				logFunc: nil,
 			},
@@ -267,7 +279,7 @@ func TestNatClient_Init(t *testing.T) {
 			defer tns.Close()
 
 			if err := tns.Do(func(ns ns.NetNS) error {
-				nc := NewNatClient(tt.args.ipv4, tt.args.ipv6, tt.args.podNodeNet, tt.args.backend, tt.args.logFunc)
+				nc := NewNatClient(tt.args.ipv4, tt.args.ipv6, tt.args.cNets, tt.args.backend, tt.args.logFunc)
 
 				if err := nc.Init(); (err != nil) != tt.wantErr {
 					return fmt.Errorf("Init() error = %w, wantErr %v", err, tt.wantErr)
@@ -287,18 +299,23 @@ func TestNatClient_Init(t *testing.T) {
 func TestNatClient_IsInitialized(t *testing.T) {
 	ipv4 := net.ParseIP("10.1.1.1")
 	ipv6 := net.ParseIP("fd02::1")
-	podNodeNet := []*net.IPNet{
+
+	netsv4 := []*net.IPNet{
 		{IP: net.ParseIP("192.168.10.0"), Mask: net.CIDRMask(24, 32)},
+	}
+	netsv6 := []*net.IPNet{
 		{IP: net.ParseIP("fd02::"), Mask: net.CIDRMask(16, 128)},
 	}
+	cNets := &ClusterNetworks{netsv4, netsv6}
+
 	backend := constants.EgressBackendIPTables
 
 	type ncArgs struct {
-		ipv4       net.IP
-		ipv6       net.IP
-		podNodeNet []*net.IPNet
-		backend    string
-		logFunc    func(string)
+		ipv4    net.IP
+		ipv6    net.IP
+		cNets   *ClusterNetworks
+		backend string
+		logFunc func(string)
 	}
 
 	tests := []struct {
@@ -309,44 +326,44 @@ func TestNatClient_IsInitialized(t *testing.T) {
 		{
 			name: "IPv4 and IPv6",
 			args: &ncArgs{
-				ipv4:       ipv4,
-				ipv6:       ipv6,
-				podNodeNet: nil,
-				backend:    backend,
-				logFunc:    nil,
+				ipv4:    ipv4,
+				ipv6:    ipv6,
+				cNets:   nil,
+				backend: backend,
+				logFunc: nil,
 			},
 			wantErr: false,
 		},
 		{
 			name: "IPv4",
 			args: &ncArgs{
-				ipv4:       ipv4,
-				ipv6:       nil,
-				podNodeNet: nil,
-				backend:    backend,
-				logFunc:    nil,
+				ipv4:    ipv4,
+				ipv6:    nil,
+				cNets:   nil,
+				backend: backend,
+				logFunc: nil,
 			},
 			wantErr: false,
 		},
 		{
 			name: "IPv6",
 			args: &ncArgs{
-				ipv4:       nil,
-				ipv6:       ipv6,
-				podNodeNet: nil,
-				backend:    backend,
-				logFunc:    nil,
+				ipv4:    nil,
+				ipv6:    ipv6,
+				cNets:   nil,
+				backend: backend,
+				logFunc: nil,
 			},
 			wantErr: false,
 		},
 		{
 			name: "With podNodeNet",
 			args: &ncArgs{
-				ipv4:       ipv4,
-				ipv6:       ipv6,
-				podNodeNet: podNodeNet,
-				backend:    backend,
-				logFunc:    nil,
+				ipv4:    ipv4,
+				ipv6:    ipv6,
+				cNets:   cNets,
+				backend: backend,
+				logFunc: nil,
 			},
 			wantErr: false,
 		},
@@ -362,7 +379,7 @@ func TestNatClient_IsInitialized(t *testing.T) {
 			defer tns.Close()
 
 			if err := tns.Do(func(ns ns.NetNS) error {
-				nc := NewNatClient(tt.args.ipv4, tt.args.ipv6, tt.args.podNodeNet, tt.args.backend, tt.args.logFunc)
+				nc := NewNatClient(tt.args.ipv4, tt.args.ipv6, tt.args.cNets, tt.args.backend, tt.args.logFunc)
 
 				got, err := nc.IsInitialized()
 				if (err != nil) != tt.wantErr {
@@ -394,10 +411,15 @@ func TestNatClient_IsInitialized(t *testing.T) {
 func TestNatClient_SyncNat(t *testing.T) {
 	ipv4 := net.ParseIP("10.1.1.1")
 	ipv6 := net.ParseIP("fd02::1")
-	podNodeNet := []*net.IPNet{
+
+	netsv4 := []*net.IPNet{
 		{IP: net.ParseIP("192.168.10.0"), Mask: net.CIDRMask(24, 32)},
+	}
+	netsv6 := []*net.IPNet{
 		{IP: net.ParseIP("fd02::"), Mask: net.CIDRMask(16, 128)},
 	}
+	cNets := &ClusterNetworks{netsv4, netsv6}
+
 	v4SubnetsFirst := []*net.IPNet{
 		{IP: net.ParseIP("10.1.2.0"), Mask: net.CIDRMask(24, 32)},
 		{IP: net.ParseIP("0.0.0.0"), Mask: net.CIDRMask(0, 32)},
@@ -421,7 +443,7 @@ func TestNatClient_SyncNat(t *testing.T) {
 	type fields struct {
 		ipv4       net.IP
 		ipv6       net.IP
-		podNodeNet []*net.IPNet
+		podNodeNet *ClusterNetworks
 		logFunc    func(string)
 	}
 	tests := []struct {
@@ -460,11 +482,11 @@ func TestNatClient_SyncNat(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "With podNodeNet",
+			name: "With cluster-networks",
 			fields: fields{
 				ipv4:       ipv4,
 				ipv6:       ipv6,
-				podNodeNet: podNodeNet,
+				podNodeNet: cNets,
 				logFunc:    nil,
 			},
 			wantErr: false,
@@ -477,12 +499,10 @@ func TestNatClient_SyncNat(t *testing.T) {
 			// rather than being swallowed by the override.
 			name: "With IPv6-only override",
 			fields: fields{
-				ipv4: ipv4,
-				ipv6: ipv6,
-				podNodeNet: []*net.IPNet{
-					{IP: net.ParseIP("fd02::"), Mask: net.CIDRMask(16, 128)},
-				},
-				logFunc: nil,
+				ipv4:       ipv4,
+				ipv6:       ipv6,
+				podNodeNet: &ClusterNetworks{[]*net.IPNet{}, netsv6},
+				logFunc:    nil,
 			},
 			wantErr: false,
 		},

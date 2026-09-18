@@ -5,17 +5,74 @@ import (
 	"testing"
 )
 
-func cidrs(t *testing.T, ss ...string) []*net.IPNet {
-	t.Helper()
-	var nets []*net.IPNet
-	for _, s := range ss {
-		_, n, err := net.ParseCIDR(s)
-		if err != nil {
-			t.Fatalf("invalid CIDR %q: %v", s, err)
-		}
-		nets = append(nets, n)
+func TestParseClusterNetworks(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		nets    []string
+		wantErr bool
+		v4Size  int
+		v6Size  int
+	}{
+		{
+			name:    "empty",
+			nets:    []string{},
+			wantErr: false,
+			v4Size:  0,
+			v6Size:  0,
+		},
+		{
+			name:    "a few networks of each family",
+			nets:    []string{"10.0.0.0/8", "fd00::/8", "172.16.0.0/12", "2001:db8::/32"},
+			wantErr: false,
+			v4Size:  2,
+			v6Size:  2,
+		},
+		{
+			name:    "only IPv4",
+			nets:    []string{"10.0.0.0/8", "172.16.0.0/12"},
+			wantErr: false,
+			v4Size:  2,
+			v6Size:  0,
+		},
+		{
+			name:    "only IPv6",
+			nets:    []string{"fd00::/8", "2001:db8::/32"},
+			wantErr: false,
+			v4Size:  0,
+			v6Size:  2,
+		},
+		{
+			name:    "invalid value",
+			nets:    []string{"fd00::/8", "not a CIDR"},
+			wantErr: true,
+			v4Size:  0,
+			v6Size:  0,
+		},
 	}
-	return nets
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			nets := tt.nets
+
+			cn, err := ParseClusterNetworks(nets)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ParseClusterNetworks() error = %v, wantErr %v", err, tt.wantErr)
+			}
+
+			if cn != nil {
+				if len(cn.v4) != tt.v4Size {
+					t.Errorf("ParseClusterNetworks() invalid size of V4 slice, want %d, got %d", tt.v4Size, len(cn.v4))
+				}
+
+				if len(cn.v6) != tt.v6Size {
+					t.Errorf("ParseClusterNetworks() invalid size of V4 slice, want %d, got %d", tt.v6Size, len(cn.v6))
+				}
+			}
+		})
+	}
 }
 
 func TestValidateClusterNetworks(t *testing.T) {
@@ -23,73 +80,64 @@ func TestValidateClusterNetworks(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		nets    []*net.IPNet
+		cn      *ClusterNetworks
 		wantErr bool
 	}{
 		{
 			name:    "empty",
-			nets:    nil,
+			cn:      &ClusterNetworks{},
 			wantErr: false,
 		},
 		{
-			name:    "a few networks of each family",
-			nets:    cidrs(t, "10.0.0.0/8", "172.16.0.0/12", "fd00::/8", "2001:db8::/32"),
+			name: "a few networks of each family",
+			cn: &ClusterNetworks{
+				v4: make([]*net.IPNet, 2),
+				v6: make([]*net.IPNet, 2),
+			},
 			wantErr: false,
 		},
 		{
-			name:    "exactly at the IPv4 limit",
-			nets:    make([]*net.IPNet, MaxInClusterNetworks),
+			name: "exactly at the IPv4 limit",
+			cn: &ClusterNetworks{
+				v4: make([]*net.IPNet, MaxInClusterNetworks),
+				v6: make([]*net.IPNet, 0),
+			},
 			wantErr: false,
 		},
 		{
-			name:    "exceeds the IPv4 limit",
-			nets:    make([]*net.IPNet, MaxInClusterNetworks+1),
+			name: "exactly at the IPv6 limit",
+			cn: &ClusterNetworks{
+				v4: make([]*net.IPNet, 0),
+				v6: make([]*net.IPNet, MaxInClusterNetworks),
+			},
+			wantErr: false,
+		},
+		{
+			name: "exceeds the IPv4 limit",
+			cn: &ClusterNetworks{
+				v4: make([]*net.IPNet, MaxInClusterNetworks+1),
+				v6: make([]*net.IPNet, 0),
+			},
 			wantErr: true,
 		},
-	}
-
-	// make([]*net.IPNet, n) above yields nil entries; fill with distinct
-	// IPv4 /32 networks so the per-family counting logic under test is exercised.
-	fillV4 := func(nets []*net.IPNet) []*net.IPNet {
-		for i := range nets {
-			ip := net.IPv4(10, 0, byte(i>>8), byte(i))
-			nets[i] = &net.IPNet{IP: ip, Mask: net.CIDRMask(32, 32)}
-		}
-		return nets
+		{
+			name: "exceeds the IPv6 limit",
+			cn: &ClusterNetworks{
+				v4: make([]*net.IPNet, 0),
+				v6: make([]*net.IPNet, MaxInClusterNetworks+1),
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			nets := tt.nets
-			if tt.name == "exactly at the IPv4 limit" || tt.name == "exceeds the IPv4 limit" {
-				nets = fillV4(nets)
-			}
-			err := ValidateClusterNetworks(nets)
+			cn := tt.cn
+			err := ValidateClusterNetworks(cn)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ValidateClusterNetworks() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
-	}
-}
-
-func TestValidateClusterNetworksIPv6Limit(t *testing.T) {
-	t.Parallel()
-
-	var nets []*net.IPNet
-	for i := range MaxInClusterNetworks {
-		ip := net.ParseIP("2001:db8::")
-		ip[14] = byte(i >> 8)
-		ip[15] = byte(i)
-		nets = append(nets, &net.IPNet{IP: ip, Mask: net.CIDRMask(128, 128)})
-	}
-	if err := ValidateClusterNetworks(nets); err != nil {
-		t.Errorf("ValidateClusterNetworks() at limit should succeed, got error = %v", err)
-	}
-
-	ip := net.ParseIP("2001:db8::ffff")
-	nets = append(nets, &net.IPNet{IP: ip, Mask: net.CIDRMask(128, 128)})
-	if err := ValidateClusterNetworks(nets); err == nil {
-		t.Errorf("ValidateClusterNetworks() exceeding IPv6 limit should fail, got nil")
 	}
 }

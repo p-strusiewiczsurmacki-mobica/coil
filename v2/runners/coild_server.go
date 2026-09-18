@@ -55,13 +55,13 @@ type NATSetup interface {
 // `port` is the UDP port number to accept Foo-over-UDP packets.
 // `clusterNetworks` overrides the default in-cluster networks excluded from
 // egress NAT (see netfilter.NewNatClient); it may be nil to keep the defaults.
-func NewNATSetup(port int, clusterNetworks []*net.IPNet) NATSetup {
+func NewNATSetup(port int, clusterNetworks *netfilter.ClusterNetworks) NATSetup {
 	return natSetup{port: port, clusterNetworks: clusterNetworks}
 }
 
 type natSetup struct {
 	port            int
-	clusterNetworks []*net.IPNet
+	clusterNetworks *netfilter.ClusterNetworks
 }
 
 func (n natSetup) Hook(l []GWNets, backend string, log *zap.Logger) func(ipv4, ipv6 net.IP) error {

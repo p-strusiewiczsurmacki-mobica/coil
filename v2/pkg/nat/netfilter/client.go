@@ -88,23 +88,15 @@ type NatClient struct {
 // routable IPv6 addresses (or non-RFC1918 IPv4 ranges) keep intra-cluster
 // traffic out of the NAT tunnel even when an Egress destination such as ::/0
 // or 0.0.0.0/0 is configured.
-func NewNatClient(ipv4, ipv6 net.IP, clusterNetworks []*net.IPNet, backend string, logFunc func(string)) *NatClient {
-	var v4Override, v6Override []*net.IPNet
-	for _, n := range clusterNetworks {
-		if n.IP.To4() != nil {
-			v4Override = append(v4Override, n)
-		} else {
-			v6Override = append(v6Override, n)
-		}
-	}
+func NewNatClient(ipv4, ipv6 net.IP, clusterNetworks *ClusterNetworks, backend string, logFunc func(string)) *NatClient {
 
 	v4InCluster := v4PrivateList
-	if len(v4Override) > 0 {
-		v4InCluster = v4Override
+	if len(clusterNetworks.v4) > 0 {
+		v4InCluster = clusterNetworks.v4
 	}
 	v6InCluster := v6PrivateList
-	if len(v6Override) > 0 {
-		v6InCluster = v6Override
+	if len(clusterNetworks.v6) > 0 {
+		v6InCluster = clusterNetworks.v6
 	}
 
 	nc := &NatClient{
@@ -116,29 +108,6 @@ func NewNatClient(ipv4, ipv6 net.IP, clusterNetworks []*net.IPNet, backend strin
 		logFunc:     logFunc,
 	}
 	return nc
-}
-
-// ValidateClusterNetworks checks that clusterNetworks does not exceed
-// MaxInClusterNetworks entries per IP family. Each in-cluster network consumes
-// one rule priority starting at ncLocalPrioBase; exceeding the limit would
-// collide with the ncWidePrio rule and silently break the wide (default route)
-// NAT path.
-func ValidateClusterNetworks(clusterNetworks []*net.IPNet) error {
-	var v4Count, v6Count int
-	for _, n := range clusterNetworks {
-		if n.IP.To4() != nil {
-			v4Count++
-		} else {
-			v6Count++
-		}
-	}
-	if v4Count > MaxInClusterNetworks {
-		return fmt.Errorf("too many IPv4 cluster networks: %d (max %d)", v4Count, MaxInClusterNetworks)
-	}
-	if v6Count > MaxInClusterNetworks {
-		return fmt.Errorf("too many IPv6 cluster networks: %d (max %d)", v6Count, MaxInClusterNetworks)
-	}
-	return nil
 }
 
 func (n *NatClient) Init() error {

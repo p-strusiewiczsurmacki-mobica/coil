@@ -32,7 +32,7 @@ type EgressWatcher struct {
 	// egress NAT (see netfilter.NewNatClient). It must be kept in sync with
 	// the value passed to runners.NewNATSetup, since both must agree on which
 	// destinations use the narrow (117) vs wide (118) routing table.
-	ClusterNetworks []*net.IPNet
+	ClusterNetworks *netfilter.ClusterNetworks
 }
 
 // +kubebuilder:rbac:groups=coil.cybozu.com,resources=egresses,verbs=get;list;watch
