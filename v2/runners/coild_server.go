@@ -40,10 +40,11 @@ import (
 
 // GWNets represents networks for a destination.
 type GWNets struct {
-	Gateway         net.IP
-	Networks        []*net.IPNet
-	SportAuto       bool
-	OriginatingOnly bool
+	Gateway          net.IP
+	Networks         []*net.IPNet
+	ExcludedNetworks *netfilter.ClusterNetworks
+	SportAuto        bool
+	OriginatingOnly  bool
 }
 
 // NATSetup represents a NAT setup function for Pods.
@@ -73,7 +74,14 @@ func (n natSetup) Hook(l []GWNets, backend string, log *zap.Logger) func(ipv4, i
 			return err
 		}
 
-		cl := netfilter.NewNatClient(ipv4, ipv6, n.clusterNetworks, backend, func(message string) {
+		excludedNetworks := &netfilter.ClusterNetworks{}
+
+		excludedNetworks.Add(n.clusterNetworks)
+		for _, gwn := range l {
+			excludedNetworks.Add(gwn.ExcludedNetworks)
+		}
+
+		cl := netfilter.NewNatClient(ipv4, ipv6, excludedNetworks, backend, func(message string) {
 			log.Sugar().Info(message)
 		})
 		if err := cl.Init(); err != nil {
@@ -502,9 +510,14 @@ func (s *coildServer) getHook(ctx context.Context, pod *corev1.Pod) (nodenet.Set
 				}
 			}
 
+			excludedNetworks, err := netfilter.ParseClusterNetworks(eg.Spec.Excluded)
+			if err != nil {
+				return nil, fmt.Errorf("invalid network in Egress %s: %w", eg.Name, err)
+			}
+
 			if len(subnets) > 0 {
 				gwlist = append(gwlist, GWNets{
-					Gateway: svcIP, Networks: subnets,
+					Gateway: svcIP, Networks: subnets, ExcludedNetworks: excludedNetworks,
 					SportAuto: eg.Spec.FouSourcePortAuto, OriginatingOnly: s.cfg.OriginatingOnly,
 				})
 			}

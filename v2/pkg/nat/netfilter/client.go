@@ -68,12 +68,11 @@ var (
 )
 
 type NatClient struct {
-	ipv4        net.IP
-	ipv6        net.IP
-	v4InCluster []*net.IPNet
-	v6InCluster []*net.IPNet
-	backend     string
-	logFunc     func(string)
+	ipv4      net.IP
+	ipv6      net.IP
+	inCluster *ClusterNetworks
+	backend   string
+	logFunc   func(string)
 
 	mu sync.Mutex
 }
@@ -89,25 +88,23 @@ type NatClient struct {
 // traffic out of the NAT tunnel even when an Egress destination such as ::/0
 // or 0.0.0.0/0 is configured.
 func NewNatClient(ipv4, ipv6 net.IP, clusterNetworks *ClusterNetworks, backend string, logFunc func(string)) *NatClient {
-	v4InCluster := v4PrivateList
-	v6InCluster := v6PrivateList
+	inCluster := &ClusterNetworks{v4PrivateList, v6PrivateList}
 
 	if clusterNetworks != nil {
 		if len(clusterNetworks.v4) > 0 {
-			v4InCluster = clusterNetworks.v4
+			inCluster.v4 = clusterNetworks.v4
 		}
 		if len(clusterNetworks.v6) > 0 {
-			v6InCluster = clusterNetworks.v6
+			inCluster.v6 = clusterNetworks.v6
 		}
 	}
 
 	nc := &NatClient{
-		ipv4:        ipv4,
-		ipv6:        ipv6,
-		v4InCluster: v4InCluster,
-		v6InCluster: v6InCluster,
-		backend:     backend,
-		logFunc:     logFunc,
+		ipv4:      ipv4,
+		ipv6:      ipv6,
+		inCluster: inCluster,
+		backend:   backend,
+		logFunc:   logFunc,
 	}
 	return nc
 }
@@ -134,7 +131,7 @@ func (n *NatClient) Init() error {
 
 func (n *NatClient) IsInitialized() (bool, error) {
 	if n.ipv4 != nil {
-		if ok, err := isRuleInitialized(netlink.FAMILY_V4, n.v4InCluster); err != nil {
+		if ok, err := isRuleInitialized(netlink.FAMILY_V4, n.inCluster.v4); err != nil {
 			return false, fmt.Errorf("failed to check IPv4 rule initialization: %w", err)
 		} else if !ok {
 			return false, err
@@ -142,7 +139,7 @@ func (n *NatClient) IsInitialized() (bool, error) {
 	}
 
 	if n.ipv6 != nil {
-		if ok, err := isRuleInitialized(netlink.FAMILY_V6, n.v6InCluster); err != nil {
+		if ok, err := isRuleInitialized(netlink.FAMILY_V6, n.inCluster.v6); err != nil {
 			return false, fmt.Errorf("failed to check IPv6 rule initialization: %w", err)
 		} else if !ok {
 			return false, err
@@ -226,9 +223,9 @@ func (n *NatClient) initRules(family int) error {
 	var inCluster []*net.IPNet
 	switch family {
 	case netlink.FAMILY_V4:
-		inCluster = n.v4InCluster
+		inCluster = n.inCluster.v4
 	case netlink.FAMILY_V6:
-		inCluster = n.v6InCluster
+		inCluster = n.inCluster.v6
 	}
 
 	for i, ipn := range inCluster {
@@ -341,12 +338,12 @@ func (n *NatClient) addRoute(link netlink.Link, ipn *net.IPNet) error {
 		if n.ipv4 == nil {
 			return nil
 		}
-		inCluster = n.v4InCluster
+		inCluster = n.inCluster.v4
 	} else {
 		if n.ipv6 == nil {
 			return nil
 		}
-		inCluster = n.v6InCluster
+		inCluster = n.inCluster.v6
 	}
 
 	// link up here to minimize the down time

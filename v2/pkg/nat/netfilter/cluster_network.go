@@ -14,6 +14,26 @@ func (cn *ClusterNetworks) IsEmpty() bool {
 	return len(cn.v4) == 0 && len(cn.v6) == 0
 }
 
+func (cn *ClusterNetworks) Add(toAdd *ClusterNetworks) {
+	if toAdd == nil {
+		return
+	}
+
+	if cn.v4 == nil {
+		cn.v4 = make([]*net.IPNet, 0)
+	}
+	if cn.v6 == nil {
+		cn.v6 = make([]*net.IPNet, 0)
+	}
+
+	if len(toAdd.v4) > 0 {
+		cn.v4 = append(cn.v4, toAdd.v4...)
+	}
+	if len(toAdd.v6) > 0 {
+		cn.v6 = append(cn.v6, toAdd.v6...)
+	}
+}
+
 // parseClusterNetworks parses --cluster-networks CIDR strings into net.IPNet values.
 func ParseClusterNetworks(cidrs []string) (*ClusterNetworks, error) {
 	var v4, v6 []*net.IPNet

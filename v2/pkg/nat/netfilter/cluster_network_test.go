@@ -75,6 +75,62 @@ func TestParseClusterNetworks(t *testing.T) {
 	}
 }
 
+func TestAddClusterNetworks(t *testing.T) {
+	t.Parallel()
+
+	type testCNet struct {
+		cNet *ClusterNetworks
+		size int
+	}
+
+	newTestCNet := func(s int) *testCNet {
+		return &testCNet{
+			cNet: &ClusterNetworks{
+				v4: make([]*net.IPNet, s),
+				v6: make([]*net.IPNet, s),
+			},
+			size: s,
+		}
+	}
+
+	cNets := []*testCNet{}
+	for i := range 3 {
+		cNets = append(cNets, newTestCNet(i+1))
+	}
+
+	tests := []struct {
+		name  string
+		cNets []*testCNet
+	}{
+		{
+			name:  "Simple ClusterNetwork concatenation",
+			cNets: cNets,
+		},
+	}
+
+	expected := 0
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			for i := range tt.cNets {
+				if i > 0 {
+					tt.cNets[0].cNet.Add(tt.cNets[i].cNet)
+				}
+				expected += tt.cNets[i].size
+
+				if len(tt.cNets[0].cNet.v4) != expected {
+					t.Errorf("cNets[0].v4 size, expected %d, got %d", expected, len(tt.cNets[0].cNet.v4))
+				}
+				if len(tt.cNets[0].cNet.v6) != expected {
+					t.Errorf("cNets[0].v6 size, expected %d, got %d", expected, len(tt.cNets[0].cNet.v6))
+				}
+			}
+		})
+	}
+}
+
 func TestValidateClusterNetworks(t *testing.T) {
 	t.Parallel()
 

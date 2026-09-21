@@ -69,12 +69,11 @@ func TestNewNatClient(t *testing.T) {
 				logFunc: nil,
 			},
 			want: &NatClient{
-				ipv4:        ipv4,
-				ipv6:        ipv6,
-				v4InCluster: v4PrivateList,
-				v6InCluster: v6PrivateList,
-				backend:     backend,
-				logFunc:     nil,
+				ipv4:      ipv4,
+				ipv6:      ipv6,
+				inCluster: &ClusterNetworks{v4PrivateList, v6PrivateList},
+				backend:   backend,
+				logFunc:   nil,
 			},
 		},
 		{
@@ -87,12 +86,11 @@ func TestNewNatClient(t *testing.T) {
 				logFunc: nil,
 			},
 			want: &NatClient{
-				ipv4:        ipv4,
-				ipv6:        nil,
-				v4InCluster: v4PrivateList,
-				v6InCluster: v6PrivateList,
-				backend:     backend,
-				logFunc:     nil,
+				ipv4:      ipv4,
+				ipv6:      nil,
+				inCluster: &ClusterNetworks{v4PrivateList, v6PrivateList},
+				backend:   backend,
+				logFunc:   nil,
 			},
 		},
 		{
@@ -105,16 +103,15 @@ func TestNewNatClient(t *testing.T) {
 				logFunc: nil,
 			},
 			want: &NatClient{
-				ipv4:        nil,
-				ipv6:        ipv6,
-				v4InCluster: v4PrivateList,
-				v6InCluster: v6PrivateList,
-				backend:     backend,
-				logFunc:     nil,
+				ipv4:      nil,
+				ipv6:      ipv6,
+				inCluster: &ClusterNetworks{v4PrivateList, v6PrivateList},
+				backend:   backend,
+				logFunc:   nil,
 			},
 		},
 		{
-			name: "With podNodeNet",
+			name: "With cluster networks",
 			args: args{
 				ipv4:    ipv4,
 				ipv6:    ipv6,
@@ -123,12 +120,11 @@ func TestNewNatClient(t *testing.T) {
 				logFunc: nil,
 			},
 			want: &NatClient{
-				ipv4:        ipv4,
-				ipv6:        ipv6,
-				v4InCluster: v4InCluster,
-				v6InCluster: v6InCluster,
-				backend:     backend,
-				logFunc:     nil,
+				ipv4:      ipv4,
+				ipv6:      ipv6,
+				inCluster: &ClusterNetworks{v4InCluster, v6InCluster},
+				backend:   backend,
+				logFunc:   nil,
 			},
 		},
 		{
@@ -145,12 +141,11 @@ func TestNewNatClient(t *testing.T) {
 				logFunc: nil,
 			},
 			want: &NatClient{
-				ipv4:        ipv4,
-				ipv6:        ipv6,
-				v4InCluster: v4PrivateList,
-				v6InCluster: v6InCluster,
-				backend:     backend,
-				logFunc:     nil,
+				ipv4:      ipv4,
+				ipv6:      ipv6,
+				inCluster: &ClusterNetworks{v4PrivateList, v6InCluster},
+				backend:   backend,
+				logFunc:   nil,
 			},
 		},
 		{
@@ -166,12 +161,11 @@ func TestNewNatClient(t *testing.T) {
 				logFunc: nil,
 			},
 			want: &NatClient{
-				ipv4:        ipv4,
-				ipv6:        ipv6,
-				v4InCluster: v4InCluster,
-				v6InCluster: v6PrivateList,
-				backend:     backend,
-				logFunc:     nil,
+				ipv4:      ipv4,
+				ipv6:      ipv6,
+				inCluster: &ClusterNetworks{v4InCluster, v6PrivateList},
+				backend:   backend,
+				logFunc:   nil,
 			},
 		},
 	}
@@ -246,11 +240,22 @@ func TestNatClient_Init(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "With podNodeNet",
+			name: "With cluster networks",
 			args: &ncArgs{
 				ipv4:    ipv4,
 				ipv6:    ipv6,
 				cNets:   cNets,
+				backend: backend,
+				logFunc: nil,
+			},
+			wantErr: false,
+		},
+		{
+			name: "With IPv4-only override",
+			args: &ncArgs{
+				ipv4:    ipv4,
+				ipv6:    ipv6,
+				cNets:   &ClusterNetworks{netsv4, []*net.IPNet{}},
 				backend: backend,
 				logFunc: nil,
 			},
@@ -357,7 +362,7 @@ func TestNatClient_IsInitialized(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "With podNodeNet",
+			name: "With cluster networks",
 			args: &ncArgs{
 				ipv4:    ipv4,
 				ipv6:    ipv6,
@@ -441,10 +446,10 @@ func TestNatClient_SyncNat(t *testing.T) {
 	}
 
 	type fields struct {
-		ipv4       net.IP
-		ipv6       net.IP
-		podNodeNet *ClusterNetworks
-		logFunc    func(string)
+		ipv4    net.IP
+		ipv6    net.IP
+		cNets   *ClusterNetworks
+		logFunc func(string)
 	}
 	tests := []struct {
 		name    string
@@ -454,55 +459,60 @@ func TestNatClient_SyncNat(t *testing.T) {
 		{
 			name: "IPv4 and IPv6",
 			fields: fields{
-				ipv4:       ipv4,
-				ipv6:       ipv6,
-				podNodeNet: nil,
-				logFunc:    nil,
+				ipv4:    ipv4,
+				ipv6:    ipv6,
+				cNets:   nil,
+				logFunc: nil,
 			},
 			wantErr: false,
 		},
 		{
 			name: "IPv4",
 			fields: fields{
-				ipv4:       ipv4,
-				ipv6:       nil,
-				podNodeNet: nil,
-				logFunc:    nil,
+				ipv4:    ipv4,
+				ipv6:    nil,
+				cNets:   nil,
+				logFunc: nil,
 			},
 			wantErr: false,
 		},
 		{
 			name: "IPv6",
 			fields: fields{
-				ipv4:       nil,
-				ipv6:       ipv6,
-				podNodeNet: nil,
-				logFunc:    nil,
+				ipv4:    nil,
+				ipv6:    ipv6,
+				cNets:   nil,
+				logFunc: nil,
 			},
 			wantErr: false,
 		},
 		{
 			name: "With cluster-networks",
 			fields: fields{
-				ipv4:       ipv4,
-				ipv6:       ipv6,
-				podNodeNet: cNets,
-				logFunc:    nil,
+				ipv4:    ipv4,
+				ipv6:    ipv6,
+				cNets:   cNets,
+				logFunc: nil,
 			},
 			wantErr: false,
 		},
 		{
-			// Regression test for the per-family fallback: an IPv6-only
-			// override (e.g. a cluster using globally routable IPv6
-			// addresses) must not disturb the IPv4 default (RFC1918), and a
-			// wide destination like ::/0 must still land in the wide table
-			// rather than being swallowed by the override.
+			name: "With IPv4-only override",
+			fields: fields{
+				ipv4:    ipv4,
+				ipv6:    ipv6,
+				cNets:   &ClusterNetworks{netsv4, []*net.IPNet{}},
+				logFunc: nil,
+			},
+			wantErr: false,
+		},
+		{
 			name: "With IPv6-only override",
 			fields: fields{
-				ipv4:       ipv4,
-				ipv6:       ipv6,
-				podNodeNet: &ClusterNetworks{[]*net.IPNet{}, netsv6},
-				logFunc:    nil,
+				ipv4:    ipv4,
+				ipv6:    ipv6,
+				cNets:   &ClusterNetworks{[]*net.IPNet{}, netsv6},
+				logFunc: nil,
 			},
 			wantErr: false,
 		},
@@ -522,7 +532,7 @@ func TestNatClient_SyncNat(t *testing.T) {
 					defer tns.Close()
 
 					if err := tns.Do(func(ns ns.NetNS) error {
-						nc := NewNatClient(tt.fields.ipv4, tt.fields.ipv6, tt.fields.podNodeNet, backend, tt.fields.logFunc)
+						nc := NewNatClient(tt.fields.ipv4, tt.fields.ipv6, tt.fields.cNets, backend, tt.fields.logFunc)
 
 						if err := nc.Init(); err != nil {
 							return fmt.Errorf("Init() error = %w", err)
@@ -580,12 +590,12 @@ func TestNatClient_SyncNat(t *testing.T) {
 
 func checkInitRules(nc *NatClient) error {
 	if nc.ipv4 != nil {
-		if err := checkInitRulesForFamily(netlink.FAMILY_V4, nc.v4InCluster); err != nil {
+		if err := checkInitRulesForFamily(netlink.FAMILY_V4, nc.inCluster.v4); err != nil {
 			return fmt.Errorf("IPv4: %w", err)
 		}
 	}
 	if nc.ipv6 != nil {
-		if err := checkInitRulesForFamily(netlink.FAMILY_V6, nc.v6InCluster); err != nil {
+		if err := checkInitRulesForFamily(netlink.FAMILY_V6, nc.inCluster.v6); err != nil {
 			return fmt.Errorf("IPv6: %w", err)
 		}
 	}
@@ -631,10 +641,10 @@ func checkInitRulesForFamily(family int, inCluster []*net.IPNet) error {
 }
 
 func checkNatClientRoutes(nc *NatClient, v4Nets, v6Nets []*net.IPNet) error {
-	if err := checkNatClientRoutesByFamily(nc.ipv4, nc.v4InCluster, v4Nets, netlink.FAMILY_V4); err != nil {
+	if err := checkNatClientRoutesByFamily(nc.ipv4, nc.inCluster.v4, v4Nets, netlink.FAMILY_V4); err != nil {
 		return fmt.Errorf("IPv4: %w", err)
 	}
-	if err := checkNatClientRoutesByFamily(nc.ipv6, nc.v6InCluster, v6Nets, netlink.FAMILY_V6); err != nil {
+	if err := checkNatClientRoutesByFamily(nc.ipv6, nc.inCluster.v6, v6Nets, netlink.FAMILY_V6); err != nil {
 		return fmt.Errorf("IPv6: %w", err)
 	}
 	return nil
