@@ -440,6 +440,11 @@ func (in *EgressSpec) DeepCopyInto(out *EgressSpec) {
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
+	if in.Excluded != nil {
+		in, out := &in.Excluded, &out.Excluded
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.Strategy != nil {
 		in, out := &in.Strategy, &out.Strategy
 		*out = new(v1.DeploymentStrategy)
