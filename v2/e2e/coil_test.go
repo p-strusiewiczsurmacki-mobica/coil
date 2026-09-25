@@ -454,6 +454,154 @@ func testEgress() {
 		}).Should(Succeed())
 	})
 
+	It("should honor custom cluster-networks when excluding destinations from egress NAT", func() {
+		By("patching coild with a custom in-cluster network override")
+		customNetwork := ""
+		if enableIPv4Tests {
+			customNetwork = "10.244.0.0/16"
+		}
+
+		if enableIPv6Tests {
+			if customNetwork != "" {
+				customNetwork += ","
+			}
+			customNetwork += "fd00:10:244::/64"
+		}
+
+		patch := fmt.Sprintf(`[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--cluster-networks=%s"}]`, customNetwork)
+		_, err := kubectl(nil, "-n", "kube-system", "patch", "daemonset", "coild", "--type=json", "--patch", patch)
+		Expect(err).ShouldNot(HaveOccurred())
+		defer func() {
+			By("restoring the default coild configuration")
+			_, err := kubectl(nil, "-n", "kube-system", "patch", "daemonset", "coild", "--type=json", "--patch", `[{"op":"remove","path":"/spec/template/spec/containers/0/args/-"}]`)
+			Expect(err).ShouldNot(HaveOccurred())
+			Eventually(func() error {
+				ds := &appsv1.DaemonSet{}
+				if err := getResource("kube-system", "daemonsets", "coild", "", ds); err != nil {
+					return err
+				}
+				if ds.Status.NumberReady != 4 {
+					return errors.New("coild not ready")
+				}
+				return nil
+			}).Should(Succeed())
+		}()
+		Eventually(func() error {
+			ds := &appsv1.DaemonSet{}
+			if err := getResource("kube-system", "daemonsets", "coild", "", ds); err != nil {
+				return err
+			}
+			if ds.Status.NumberReady != 4 {
+				return errors.New("coild not ready")
+			}
+			return nil
+		}).Should(Succeed())
+
+		By("creating a dedicated Egress resource and NAT client for the custom cluster network")
+		manifest := []byte(`
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: internet
+---
+apiVersion: coil.cybozu.com/v2
+kind: Egress
+metadata:
+  name: egress-cluster-networks
+  namespace: internet
+spec:
+  replicas: 2
+  destinations:
+  - 0.0.0.0/0
+  - ::/0
+  template:
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: coil-control-plane
+      tolerations:
+      - effect: NoSchedule
+        operator: Exists
+      containers:
+      - name: egress
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nat-client-cluster-networks
+  namespace: default
+  annotations:
+    egress.coil.cybozu.com/internet: egress-cluster-networks
+spec:
+  tolerations:
+  - key: test
+    operator: Exists
+  nodeSelector:
+    test: coil
+    kubernetes.io/hostname: coil-worker
+  containers:
+  - name: ubuntu
+    image: ghcr.io/cybozu/ubuntu-debug:22.04
+    command: ["pause"]
+`)
+		_, err = kubectl(manifest, "apply", "-f", "-")
+		Expect(err).ShouldNot(HaveOccurred())
+		Eventually(func() error {
+			pod := &corev1.Pod{}
+			if err := getResource("default", "pods", "nat-client-cluster-networks", "", pod); err != nil {
+				return err
+			}
+			if len(pod.Status.ContainerStatuses) == 0 {
+				return errors.New("no container status")
+			}
+			if !pod.Status.ContainerStatuses[0].Ready {
+				return errors.New("container is not ready")
+			}
+			return nil
+		}).Should(Succeed())
+
+		By("starting a local echo server inside the custom cluster network")
+		port := "12345"
+		go func() {
+			_, _ = runOnNode("coil-control-plane", "/usr/local/bin/echotest", "-port", port, "-no-separator")
+		}()
+		time.Sleep(100 * time.Millisecond)
+
+		nodeIPv4, nodeIPv6, err := findNodeIPInNetwork(customNetwork)
+		Expect(err).ShouldNot(HaveOccurred())
+
+		if enableIPv4Tests {
+			By("checking that the NAT client can reach the cluster network address directly - IPv4")
+			Eventually(func() error {
+				pod := &corev1.Pod{}
+				if err := getResource("default", "pods", "nat-client-cluster-networks", "", pod); err != nil {
+					return err
+				}
+				if len(pod.Status.PodIPs) == 0 {
+					return errors.New("pod has no IPs")
+				}
+				return checkEgressConnection(nodeIPv4+"/32", pod, port)
+			}).Should(Succeed())
+		}
+
+		if enableIPv6Tests {
+			By("checking that the NAT client can reach the cluster network address directly - IPv6")
+			Eventually(func() error {
+				pod := &corev1.Pod{}
+				if err := getResource("default", "pods", "nat-client-cluster-networks", "", pod); err != nil {
+					return err
+				}
+				if len(pod.Status.PodIPs) == 0 {
+					return errors.New("pod has no IPs")
+				}
+				return checkEgressConnection(nodeIPv6+"/128", pod, port)
+			}).Should(Succeed())
+		}
+
+		By("cleaning up the dedicated resources")
+		kubectlSafe(nil, "delete", "egress", "-n", "internet", "egress-cluster-networks")
+		kubectlSafe(nil, "delete", "pod", "-n", "default", "nat-client-cluster-networks")
+	})
+
 	It("should allow NAT traffic over foo-over-udp tunnel", func() {
 		type options struct {
 			fakeIP  string
@@ -874,8 +1022,66 @@ func checkPodIPs(ips []corev1.PodIP, addr string) bool {
 	return false
 }
 
+func findNodeIPInNetwork(n string) (string, string, error) {
+	networks := strings.Split(n, ",")
+
+	var ipv4, ipv6 string
+	for _, network := range networks {
+		_, ipNet, err := net.ParseCIDR(network)
+		if err != nil {
+			return "", "", fmt.Errorf("failed to parse cluster network %q: %w", network, err)
+		}
+		if ipNet.IP.To4() != nil {
+			ipv4, err = findNodeIPInNetworkFamily(network)
+			if err != nil {
+				return "", "", fmt.Errorf("failed to find node IPv4 address in network %q: %w", network, err)
+			}
+		} else {
+			ipv6, err = findNodeIPInNetworkFamily(network)
+			if err != nil {
+				return "", "", fmt.Errorf("failed to find node IPv6 address in network %q: %w", network, err)
+			}
+		}
+	}
+	return ipv4, ipv6, nil
+}
+
+func findNodeIPInNetworkFamily(network string) (string, error) {
+	_, ipNet, err := net.ParseCIDR(network)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse cluster network %q: %w", network, err)
+	}
+
+	out, err := runOnNode("coil-control-plane", "bash", "-c", "ip -j addr show")
+	if err != nil {
+		return "", fmt.Errorf("failed to read node addresses: %w", err)
+	}
+
+	var links []struct {
+		AddrInfo []struct {
+			Local string `json:"local"`
+		} `json:"addr_info"`
+	}
+	if err := json.Unmarshal(out, &links); err != nil {
+		return "", fmt.Errorf("failed to unmarshal node addresses: %w", err)
+	}
+
+	for _, link := range links {
+		for _, addr := range link.AddrInfo {
+			if addr.Local == "" {
+				continue
+			}
+			ip := net.ParseIP(addr.Local)
+			if ip != nil && ipNet.Contains(ip) {
+				return addr.Local, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("no address from %s found on any interface", network)
+}
+
 func checkEgressConnection(address string, pod *corev1.Pod, port string) error {
-	ip, _, err := net.ParseCIDR(address)
+	ip, ipNet, err := net.ParseCIDR(address)
 	if err != nil {
 		return fmt.Errorf("failed to parse address %q: %w", address, err)
 	}
@@ -883,20 +1089,11 @@ func checkEgressConnection(address string, pod *corev1.Pod, port string) error {
 		return fmt.Errorf("failed to parse address %q", address)
 	}
 
-	isV6 := ip.To4() == nil
-	separator := "."
-	if isV6 {
-		separator = ":"
-	}
-
-	addr := strings.Split(address, separator)
-
 	By("get node's IP addresses")
-	var nodeIP string
-	command := fmt.Sprintf("ip -j addr show dev eth0 | jq '.[].addr_info[] | .local' | grep %s", addr[0])
-	nodeByte, err := runOnNode("coil-control-plane", "bash", "-c", command)
-	Expect(err).ToNot(HaveOccurred())
-	nodeIP = strings.ReplaceAll(strings.Trim(string(nodeByte), " \n"), "\"", "")
+	nodeIP, err := findNodeIPInNetworkFamily(ipNet.String())
+	if err != nil {
+		return err
+	}
 
 	By("test egress connection to IP " + nodeIP)
 	if ip.To4() == nil {
