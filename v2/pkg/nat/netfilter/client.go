@@ -122,7 +122,7 @@ func (n *NatClient) Init() error {
 
 func (n *NatClient) IsInitialized() (bool, error) {
 	if n.ipv4 != nil {
-		if ok, err := isRuleInitialized(netlink.FAMILY_V4, n.inCluster.v4); err != nil {
+		if ok, err := isRuleInitialized(netlink.FAMILY_V4); err != nil {
 			return false, fmt.Errorf("failed to check IPv4 rule initialization: %w", err)
 		} else if !ok {
 			return false, err
@@ -130,7 +130,27 @@ func (n *NatClient) IsInitialized() (bool, error) {
 	}
 
 	if n.ipv6 != nil {
-		if ok, err := isRuleInitialized(netlink.FAMILY_V6, n.inCluster.v6); err != nil {
+		if ok, err := isRuleInitialized(netlink.FAMILY_V6); err != nil {
+			return false, fmt.Errorf("failed to check IPv6 rule initialization: %w", err)
+		} else if !ok {
+			return false, err
+		}
+	}
+
+	return true, nil
+}
+
+func (n *NatClient) IsInClusterInitialized() (bool, error) {
+	if n.ipv4 != nil {
+		if ok, err := isInClusterRuleInitialized(netlink.FAMILY_V4, n.inCluster.v4); err != nil {
+			return false, fmt.Errorf("failed to check IPv4 rule initialization: %w", err)
+		} else if !ok {
+			return false, err
+		}
+	}
+
+	if n.ipv6 != nil {
+		if ok, err := isInClusterRuleInitialized(netlink.FAMILY_V6, n.inCluster.v6); err != nil {
 			return false, fmt.Errorf("failed to check IPv6 rule initialization: %w", err)
 		} else if !ok {
 			return false, err
@@ -295,17 +315,8 @@ func (n *NatClient) clearRoutes(family int, gw *net.IPNet) error {
 	return nil
 }
 
-func isRuleInitialized(family int, inCluster []*net.IPNet) (bool, error) {
-	rules, err := netlink.RuleListFiltered(family, &netlink.Rule{Table: mainTableID}, netlink.RT_FILTER_TABLE)
-	if err != nil {
-		return false, fmt.Errorf("netlink: failed to list main rules: %w", err)
-	}
-	// Ensure that all inCluster rules exist
-	if len(rules) < (len(inCluster) + 1) {
-		return false, nil
-	}
-
-	rules, err = netlink.RuleListFiltered(family, &netlink.Rule{Table: ncNarrowTableID}, netlink.RT_FILTER_TABLE)
+func isRuleInitialized(family int) (bool, error) {
+	rules, err := netlink.RuleListFiltered(family, &netlink.Rule{Table: ncNarrowTableID}, netlink.RT_FILTER_TABLE)
 	if err != nil {
 		return false, fmt.Errorf("netlink: failed to list narrow rules: %w", err)
 	}
@@ -320,6 +331,19 @@ func isRuleInitialized(family int, inCluster []*net.IPNet) (bool, error) {
 	if len(rules) != 1 {
 		return false, nil
 	}
+	return true, nil
+}
+
+func isInClusterRuleInitialized(family int, inCluster []*net.IPNet) (bool, error) {
+	rules, err := netlink.RuleListFiltered(family, &netlink.Rule{Table: mainTableID}, netlink.RT_FILTER_TABLE)
+	if err != nil {
+		return false, fmt.Errorf("netlink: failed to list main rules: %w", err)
+	}
+	// Ensure that all inCluster rules exist
+	if len(rules) < (len(inCluster) + 1) {
+		return false, nil
+	}
+
 	return true, nil
 }
 
