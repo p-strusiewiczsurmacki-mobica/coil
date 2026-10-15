@@ -234,7 +234,7 @@ func (n *NatClient) syncInClusterRules(family int, inCluster []*net.IPNet) error
 	}
 
 	for _, r := range rules {
-		if r.Priority >= ncLinkLocalPrio && r.Priority < ncWidePrio {
+		if r.Priority >= ncLocalPrioBase && r.Priority < ncWidePrio {
 			if err := netlink.RuleDel(&r); err != nil {
 				return fmt.Errorf("failed to remove rule: %w", err)
 			}
