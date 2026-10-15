@@ -117,6 +117,11 @@ func (n *NatClient) Init() error {
 			return fmt.Errorf("failed to Init IPv6 table: %v", err)
 		}
 	}
+
+	if err := n.SyncInClusterRules(); err != nil {
+		return fmt.Errorf("failed to init in-CLuster rules: %w", err)
+	}
+
 	return nil
 }
 
@@ -206,6 +211,53 @@ func (n *NatClient) SyncNat(link netlink.Link, subnets []*net.IPNet, originating
 	return nil
 }
 
+func (n *NatClient) SyncInClusterRules() error {
+	if n.inCluster.v4 != nil {
+		if err := n.syncInClusterRules(netlink.FAMILY_V4, n.inCluster.v4); err != nil {
+			return fmt.Errorf("failed to sync IPv4 in-cluster rules: %w", err)
+		}
+	}
+	if n.inCluster.v6 != nil {
+		if err := n.syncInClusterRules(netlink.FAMILY_V6, n.inCluster.v6); err != nil {
+			return fmt.Errorf("failed to sync IPv4 in-cluster rules: %w", err)
+		}
+	}
+	return nil
+}
+
+func (n *NatClient) syncInClusterRules(family int, inCluster []*net.IPNet) error {
+	rules, err := netlink.RuleListFiltered(family, &netlink.Rule{
+		Table: mainTableID,
+	}, netlink.RT_FILTER_TABLE)
+	if err != nil {
+		return fmt.Errorf("failed to list IPv4 rules: %w", err)
+	}
+
+	for _, r := range rules {
+		if r.Priority >= ncLinkLocalPrio && r.Priority < ncWidePrio {
+			if err := netlink.RuleDel(&r); err != nil {
+				return fmt.Errorf("failed to remove rule: %w", err)
+			}
+		}
+	}
+
+	if err := addInClusterRules(family, inCluster); err != nil {
+		return fmt.Errorf("unable to sync in-cluster rules: %w", err)
+	}
+	return nil
+}
+
+func addInClusterRules(family int, networks []*net.IPNet) error {
+	for i, ipn := range networks {
+		r := newRule(family, mainTableID, ncLocalPrioBase+i)
+		r.Dst = ipn
+		if err := netlink.RuleAdd(r); err != nil && !errors.Is(err, syscall.EEXIST) {
+			return fmt.Errorf("netlink: failed to add %s to rule: %w", ipn.String(), err)
+		}
+	}
+	return nil
+}
+
 func (n *NatClient) initRules(family int) error {
 	var linkLocal *net.IPNet
 	switch family {
@@ -231,21 +283,6 @@ func (n *NatClient) initRules(family int) error {
 		return fmt.Errorf("netlink: failed to add wide rule: %w", err)
 	}
 
-	var inCluster []*net.IPNet
-	switch family {
-	case netlink.FAMILY_V4:
-		inCluster = n.inCluster.v4
-	case netlink.FAMILY_V6:
-		inCluster = n.inCluster.v6
-	}
-
-	for i, ipn := range inCluster {
-		r := newRule(family, mainTableID, ncLocalPrioBase+i)
-		r.Dst = ipn
-		if err := netlink.RuleAdd(r); err != nil && !errors.Is(err, syscall.EEXIST) {
-			return fmt.Errorf("netlink: failed to add %s to rule: %w", ipn.String(), err)
-		}
-	}
 	return nil
 }
 
