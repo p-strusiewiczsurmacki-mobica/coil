@@ -212,14 +212,14 @@ func (n *NatClient) SyncNat(link netlink.Link, subnets []*net.IPNet, originating
 }
 
 func (n *NatClient) SyncInClusterRules() error {
-	if n.inCluster.v4 != nil {
+	if n.ipv4 != nil {
 		if err := n.syncInClusterRules(netlink.FAMILY_V4, n.inCluster.v4); err != nil {
 			return fmt.Errorf("failed to sync IPv4 in-cluster rules: %w", err)
 		}
 	}
-	if n.inCluster.v6 != nil {
+	if n.ipv6 != nil {
 		if err := n.syncInClusterRules(netlink.FAMILY_V6, n.inCluster.v6); err != nil {
-			return fmt.Errorf("failed to sync IPv4 in-cluster rules: %w", err)
+			return fmt.Errorf("failed to sync IPv6 in-cluster rules: %w", err)
 		}
 	}
 	return nil
@@ -230,31 +230,68 @@ func (n *NatClient) syncInClusterRules(family int, inCluster []*net.IPNet) error
 		Table: mainTableID,
 	}, netlink.RT_FILTER_TABLE)
 	if err != nil {
-		return fmt.Errorf("failed to list IPv4 rules: %w", err)
+		return fmt.Errorf("failed to list rules: %w", err)
 	}
 
-	for _, r := range rules {
+	existingRules := make([]*netlink.Rule, ncWidePrio-ncLocalPrioBase)
+	existingRulesMap := make(map[string]*netlink.Rule)
+
+	for i, r := range rules {
 		if r.Priority >= ncLocalPrioBase && r.Priority < ncWidePrio {
-			if err := netlink.RuleDel(&r); err != nil {
-				return fmt.Errorf("failed to remove rule: %w", err)
+			if r.Dst == nil {
+				continue
+			}
+			existingRules[r.Priority-ncLocalPrioBase] = &rules[i]
+			existingRulesMap[r.Dst.String()] = &rules[i]
+		}
+	}
+
+	candidatesMap := make(map[string]*net.IPNet)
+	for i := range inCluster {
+		candidatesMap[inCluster[i].String()] = inCluster[i]
+	}
+
+	toDelete := []*netlink.Rule{}
+	for addr, r := range existingRulesMap {
+		if _, exists := candidatesMap[addr]; !exists {
+			toDelete = append(toDelete, r)
+		}
+	}
+
+	toAdd := []*net.IPNet{}
+
+	for addr, ipn := range candidatesMap {
+		if _, exists := existingRulesMap[addr]; !exists {
+			toAdd = append(toAdd, ipn)
+		}
+	}
+
+	for _, r := range toDelete {
+		if err := netlink.RuleDel(r); err != nil {
+			return fmt.Errorf("netlink: failed to delete rule: %q: %w", r.String(), err)
+		}
+		existingRules[r.Priority-ncLocalPrioBase] = nil
+	}
+
+	index := 0
+	for _, ipn := range toAdd {
+		for ; index < len(existingRules); index++ {
+			if existingRules[index] == nil {
+				break
 			}
 		}
-	}
+		if index >= len(existingRules) {
+			return fmt.Errorf("no free rule priorities available")
+		}
 
-	if err := addInClusterRules(family, inCluster); err != nil {
-		return fmt.Errorf("unable to sync in-cluster rules: %w", err)
-	}
-	return nil
-}
-
-func addInClusterRules(family int, networks []*net.IPNet) error {
-	for i, ipn := range networks {
-		r := newRule(family, mainTableID, ncLocalPrioBase+i)
+		r := newRule(family, mainTableID, ncLocalPrioBase+index)
 		r.Dst = ipn
 		if err := netlink.RuleAdd(r); err != nil && !errors.Is(err, syscall.EEXIST) {
-			return fmt.Errorf("netlink: failed to add %s to rule: %w", ipn.String(), err)
+			return fmt.Errorf("netlink: failed to add rule %q: %w", r.String(), err)
 		}
+		index++
 	}
+
 	return nil
 }
 
@@ -376,9 +413,10 @@ func isInClusterRuleInitialized(family int, inCluster []*net.IPNet) (bool, error
 	if err != nil {
 		return false, fmt.Errorf("netlink: failed to list main rules: %w", err)
 	}
+
 	// Ensure that all inCluster rules exist
 	if len(rules) < (len(inCluster) + 1) {
-		return false, nil
+		return false, fmt.Errorf("not all rules exist")
 	}
 
 	return true, nil
