@@ -174,7 +174,7 @@ func (n *NatClient) SyncNat(link netlink.Link, subnets []*net.IPNet, originating
 		return err
 	}
 
-	adds, dels := diffRoutes(routesBySubnet, subnets)
+	adds, dels, moves := diffRoutes(routesBySubnet, subnets)
 
 	for _, r := range dels {
 		if err := n.deleteRoute(r); err != nil {
@@ -195,6 +195,10 @@ func (n *NatClient) SyncNat(link netlink.Link, subnets []*net.IPNet, originating
 		configuredFamilies[f] = struct{}{}
 	}
 
+	if err := n.moveRoutes(moves); err != nil {
+		return err
+	}
+
 	if originatingOnly {
 		for f := range configuredFamilies {
 			if err := configureOriginatingOnly(f, n.backend); err != nil {
@@ -209,6 +213,57 @@ func (n *NatClient) SyncNat(link netlink.Link, subnets []*net.IPNet, originating
 		}
 	}
 	return nil
+}
+
+func (n *NatClient) moveRoutes(routes []netlink.Route) error {
+	for _, r := range routes {
+		if r.Dst == nil {
+			continue
+		}
+
+		// select proper IP family and cluster-networks
+		cn := n.inCluster.v4
+		if r.Dst.IP.To4() == nil {
+			cn = n.inCluster.v6
+		}
+
+		expectedTable := ncWideTableID
+		for _, subnet := range cn {
+			if ipnetContains(subnet, r.Dst) {
+				// at least one cluster-network subnet contains the egress route subnet
+				// which means egress subnet should be 'narrow'
+				expectedTable = ncNarrowTableID
+				break
+			}
+		}
+
+		if r.Table == expectedTable {
+			// existing route is in a proper table, do nothing
+			continue
+		}
+
+		// delete route from the incorrect table
+		if err := netlink.RouteDel(&r); err != nil {
+			return fmt.Errorf("failed to delete route %q: %w", r.String(), err)
+		}
+
+		// update the table in the route and add
+		r.Table = expectedTable
+		if err := netlink.RouteAdd(&r); err != nil {
+			return fmt.Errorf("failed to add route %q: %w", r.String(), err)
+		}
+	}
+
+	return nil
+}
+
+func ipnetContains(a, b *net.IPNet) bool {
+	if (a.IP.To4() == nil) != (b.IP.To4() == nil) {
+		return false
+	}
+	onesA, _ := a.Mask.Size()
+	onesB, _ := b.Mask.Size()
+	return onesA <= onesB && a.Contains(b.IP)
 }
 
 func (n *NatClient) SyncInClusterRules() error {
@@ -443,7 +498,7 @@ func (n *NatClient) addRoute(link netlink.Link, ipn *net.IPNet) error {
 	}
 
 	for _, cipn := range inCluster {
-		if !cipn.Contains(ipn.IP) {
+		if !ipnetContains(cipn, ipn) {
 			continue
 		}
 
@@ -509,13 +564,14 @@ func collectRoutesFromTable(family, table, linkIndex int) (map[string]netlink.Ro
 	return res, nil
 }
 
-func diffRoutes(routes map[string]netlink.Route, subnets []*net.IPNet) (adds []*net.IPNet, dels []*netlink.Route) {
+func diffRoutes(routes map[string]netlink.Route, subnets []*net.IPNet) (adds []*net.IPNet, dels []*netlink.Route, moves []netlink.Route) {
 	rs := make(map[string]netlink.Route)
 	maps.Copy(rs, routes)
 	for _, subnet := range subnets {
-		if _, ok := rs[subnet.String()]; !ok {
+		if r, ok := rs[subnet.String()]; !ok {
 			adds = append(adds, subnet)
 		} else {
+			moves = append(moves, r)
 			delete(rs, subnet.String())
 		}
 	}
