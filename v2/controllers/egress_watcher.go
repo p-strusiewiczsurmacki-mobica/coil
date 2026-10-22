@@ -161,7 +161,6 @@ type gwNets struct {
 }
 
 func (r *EgressWatcher) getHooks(ctx context.Context, eg *coilv2.Egress, logger *logr.Logger) ([]nodenet.SetupHook, error) {
-	var gw gwNets
 	svc := &corev1.Service{}
 
 	if err := r.Get(ctx, client.ObjectKey{Namespace: eg.Namespace, Name: eg.Name}, svc); err != nil {
@@ -186,10 +185,8 @@ func (r *EgressWatcher) getHooks(ctx context.Context, eg *coilv2.Egress, logger 
 			}
 		}
 
-		if len(subnets) > 0 {
-			gw = gwNets{gateway: svcIP, networks: subnets, sportAuto: eg.Spec.FouSourcePortAuto, originatingOnly: r.OriginatingOnly}
-			hooks = append(hooks, r.hook(gw, logger))
-		}
+		gw := gwNets{gateway: svcIP, networks: subnets, sportAuto: eg.Spec.FouSourcePortAuto, originatingOnly: r.OriginatingOnly}
+		hooks = append(hooks, r.hook(gw, logger))
 	}
 
 	return hooks, nil
