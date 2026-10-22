@@ -235,7 +235,23 @@ func (r *EgressWatcher) hook(gwn gwNets, log *logr.Logger) func(ipv4, ipv6 net.I
 		if err != nil {
 			return err
 		}
-		if err := cl.SyncNat(link, gwn.networks, gwn.originatingOnly); err != nil {
+
+		netV4 := []*net.IPNet{}
+		netV6 := []*net.IPNet{}
+
+		for _, net := range gwn.networks {
+			if net.IP.To4() != nil {
+				netV4 = append(netV4, net)
+			} else {
+				netV6 = append(netV6, net)
+			}
+		}
+
+		if err := cl.SyncNat(link, netV4, gwn.originatingOnly); err != nil {
+			return err
+		}
+
+		if err := cl.SyncNat(link, netV6, gwn.originatingOnly); err != nil {
 			return err
 		}
 

@@ -172,7 +172,10 @@ func TestNewNatClient(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := NewNatClient(tt.args.ipv4, tt.args.ipv6, tt.args.cNets, tt.args.backend, tt.args.logFunc)
+			got, err := NewNatClient(tt.args.ipv4, tt.args.ipv6, tt.args.cNets, tt.args.backend, tt.args.logFunc)
+			if err != nil {
+				t.Errorf("NewNatClient() returned err = %v", err)
+			}
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("NewNatClient() got = %v, want %v", got, tt.want)
 			}
@@ -273,8 +276,10 @@ func TestNatClient_Init(t *testing.T) {
 			defer tns.Close()
 
 			if err := tns.Do(func(ns ns.NetNS) error {
-				nc := NewNatClient(tt.args.ipv4, tt.args.ipv6, tt.args.cNets, tt.args.backend, tt.args.logFunc)
-
+				nc, err := NewNatClient(tt.args.ipv4, tt.args.ipv6, tt.args.cNets, tt.args.backend, tt.args.logFunc)
+				if err != nil {
+					return fmt.Errorf("NewNatClient() returned err = %w", err)
+				}
 				if err := nc.Init(); (err != nil) != tt.wantErr {
 					return fmt.Errorf("Init() error = %w, wantErr %v", err, tt.wantErr)
 				}
@@ -373,7 +378,10 @@ func TestNatClient_IsInitialized(t *testing.T) {
 			defer tns.Close()
 
 			if err := tns.Do(func(ns ns.NetNS) error {
-				nc := NewNatClient(tt.args.ipv4, tt.args.ipv6, tt.args.cNets, tt.args.backend, tt.args.logFunc)
+				nc, err := NewNatClient(tt.args.ipv4, tt.args.ipv6, tt.args.cNets, tt.args.backend, tt.args.logFunc)
+				if err != nil {
+					return fmt.Errorf("NewNatClient() returned err = %w", err)
+				}
 
 				got, err := nc.IsInitialized()
 				if (err != nil) != tt.wantErr {
@@ -531,7 +539,10 @@ func TestNatClient_SyncNat(t *testing.T) {
 					defer tns.Close()
 
 					if err := tns.Do(func(ns ns.NetNS) error {
-						nc := NewNatClient(tt.fields.ipv4, tt.fields.ipv6, tt.fields.podNodeNet, backend, tt.fields.logFunc)
+						nc, err := NewNatClient(tt.fields.ipv4, tt.fields.ipv6, tt.fields.podNodeNet, backend, tt.fields.logFunc)
+						if err != nil {
+							return fmt.Errorf("NewNatClient() returned err = %w", err)
+						}
 
 						if err := nc.Init(); err != nil {
 							return fmt.Errorf("Init() error = %w", err)

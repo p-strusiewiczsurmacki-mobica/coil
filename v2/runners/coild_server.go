@@ -93,7 +93,23 @@ func (n natSetup) Hook(l []GWNets, backend string, log *zap.Logger) func(ipv4, i
 			if err != nil {
 				return err
 			}
-			if err := cl.SyncNat(link, gwn.Networks, gwn.OriginatingOnly); err != nil {
+
+			netV4 := []*net.IPNet{}
+			netV6 := []*net.IPNet{}
+
+			for _, net := range gwn.Networks {
+				if net.IP.To4() != nil {
+					netV4 = append(netV4, net)
+				} else {
+					netV6 = append(netV6, net)
+				}
+			}
+
+			if err := cl.SyncNat(link, netV4, gwn.OriginatingOnly); err != nil {
+				return err
+			}
+
+			if err := cl.SyncNat(link, netV6, gwn.OriginatingOnly); err != nil {
 				return err
 			}
 		}
