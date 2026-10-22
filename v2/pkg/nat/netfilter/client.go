@@ -174,23 +174,36 @@ func (n *NatClient) SyncNat(link netlink.Link, subnets []*net.IPNet, originating
 	defer n.mu.Unlock()
 
 	families := make(map[int]struct{})
+	if n.ipv4 != nil {
+		families[netlink.FAMILY_V4] = struct{}{}
+	}
+	if n.ipv6 != nil {
+		families[netlink.FAMILY_V6] = struct{}{}
+	}
+
+	subnetsV4 := []*net.IPNet{}
+	subnetsV6 := []*net.IPNet{}
+
 	for _, s := range subnets {
 		if s.IP.To4() != nil {
-			families[netlink.FAMILY_V4] = struct{}{}
+			subnetsV4 = append(subnetsV4, s)
 		} else {
-			families[netlink.FAMILY_V6] = struct{}{}
-		}
-		if len(families) > 1 {
-			break
+			subnetsV6 = append(subnetsV6, s)
 		}
 	}
 
 	for f := range families {
+		s := subnetsV4
+		if f == netlink.FAMILY_V6 {
+			s = subnetsV6
+		}
+
 		routesBySubnet, err := collectRoutesBySubnet(link.Attrs().Index, f)
 		if err != nil {
 			return err
 		}
-		if err := n.syncNat(link, subnets, originatingOnly, routesBySubnet, f); err != nil {
+
+		if err := n.syncNat(link, s, originatingOnly, routesBySubnet, f); err != nil {
 			return err
 		}
 	}
@@ -237,11 +250,7 @@ func (n *NatClient) moveRoutes(routes []netlink.Route, family int) error {
 	for _, r := range routes {
 		rDst := r.Dst
 		if rDst == nil {
-			var err error
-			rDst, err = getDefaultGlobalDst(family)
-			if err != nil {
-				return err
-			}
+			rDst = getDefaultGlobalDst(family)
 		}
 
 		// select proper IP family and cluster-networks
@@ -272,12 +281,12 @@ func (n *NatClient) moveRoutes(routes []netlink.Route, family int) error {
 			LinkIndex: r.LinkIndex,
 			Protocol:  ncProtocolID,
 		}); err != nil {
-			return fmt.Errorf("netlink: failed to add route %q: %w", r.String(), err)
+			return fmt.Errorf("netlink: failed to add route %q: %w", rDst, err)
 		}
 
 		// delete route from the incorrect table
 		if err := netlink.RouteDel(&r); err != nil {
-			return fmt.Errorf("netlink: failed to delete route %q: %w", r.String(), err)
+			return fmt.Errorf("netlink: failed to delete route %q: %w", rDst, err)
 		}
 
 	}
@@ -323,10 +332,7 @@ func (n *NatClient) syncInClusterRules(family int, inCluster []*net.IPNet) error
 		if r.Priority >= ncLocalPrioBase && r.Priority < ncWidePrio {
 			rDst := r.Dst
 			if rDst == nil {
-				rDst, err = getDefaultGlobalDst(family)
-				if err != nil {
-					return fmt.Errorf("failed to get default destination: %w", err)
-				}
+				rDst = getDefaultGlobalDst(family)
 			}
 			existingRules[r.Priority-ncLocalPrioBase] = &rules[i]
 			existingRulesMap[rDst.String()] = &rules[i]
@@ -505,10 +511,7 @@ func areInClusterRulesInitialized(family int, inCluster []*net.IPNet) (bool, err
 		return false, fmt.Errorf("netlink: failed to list main rules: %w", err)
 	}
 
-	defaultDst, err := getDefaultGlobalDst(family)
-	if err != nil {
-		return false, fmt.Errorf("failed to get default destination: %w", err)
-	}
+	defaultDst := getDefaultGlobalDst(family)
 
 	// Build local lookup map
 	existingRules := make(map[string]struct{}, len(rules))
@@ -536,16 +539,11 @@ func areInClusterRulesInitialized(family int, inCluster []*net.IPNet) (bool, err
 	return true, nil
 }
 
-func getDefaultGlobalDst(family int) (*net.IPNet, error) {
-	defAddr := "0.0.0.0/0"
+func getDefaultGlobalDst(family int) *net.IPNet {
 	if family == netlink.FAMILY_V6 {
-		defAddr = "::/0"
+		return defaultIPv6GW
 	}
-	_, defaultDst, err := net.ParseCIDR(defAddr)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create %q CIDR: %w", defAddr, err)
-	}
-	return defaultDst, nil
+	return defaultIPv4GW
 }
 
 func (n *NatClient) addRoute(link netlink.Link, ipn *net.IPNet) error {
@@ -628,8 +626,12 @@ func collectRoutesFromTable(family, table, linkIndex int) (map[string]netlink.Ro
 	}
 
 	for _, r := range rs {
-		if r.LinkIndex == linkIndex && r.Dst != nil {
-			res[r.Dst.String()] = r
+		if r.LinkIndex == linkIndex {
+			rDst := r.Dst
+			if rDst == nil {
+				rDst = getDefaultGlobalDst(family)
+			}
+			res[rDst.String()] = r
 		}
 	}
 	return res, nil
