@@ -248,11 +248,6 @@ func (n *NatClient) syncNat(link netlink.Link, subnets []*net.IPNet, originating
 
 func (n *NatClient) moveRoutes(routes []netlink.Route, family int) error {
 	for _, r := range routes {
-		rDst := r.Dst
-		if rDst == nil {
-			rDst = getDefaultGlobalDst(family)
-		}
-
 		// select proper IP family and cluster-networks
 		cn := n.inCluster.v4
 		if family == netlink.FAMILY_V6 {
@@ -261,7 +256,7 @@ func (n *NatClient) moveRoutes(routes []netlink.Route, family int) error {
 
 		expectedTable := ncWideTableID
 		for _, subnet := range cn {
-			if ipnetContains(subnet, rDst) {
+			if ipnetContains(subnet, r.Dst) {
 				// at least one cluster-network subnet contains the egress route subnet
 				// which means egress subnet should be 'narrow'
 				expectedTable = ncNarrowTableID
@@ -277,16 +272,16 @@ func (n *NatClient) moveRoutes(routes []netlink.Route, family int) error {
 		// add the rule to the correct table
 		if err := netlink.RouteAdd(&netlink.Route{
 			Table:     expectedTable,
-			Dst:       rDst,
+			Dst:       r.Dst,
 			LinkIndex: r.LinkIndex,
 			Protocol:  ncProtocolID,
 		}); err != nil {
-			return fmt.Errorf("netlink: failed to add route %q: %w", rDst, err)
+			return fmt.Errorf("netlink: failed to add route %q: %w", r.Dst, err)
 		}
 
 		// delete route from the incorrect table
 		if err := netlink.RouteDel(&r); err != nil {
-			return fmt.Errorf("netlink: failed to delete route %q: %w", rDst, err)
+			return fmt.Errorf("netlink: failed to delete route %q: %w", r.Dst, err)
 		}
 
 	}
@@ -511,14 +506,12 @@ func areInClusterRulesInitialized(family int, inCluster []*net.IPNet) (bool, err
 		return false, fmt.Errorf("netlink: failed to list main rules: %w", err)
 	}
 
-	defaultDst := getDefaultGlobalDst(family)
-
 	// Build local lookup map
 	existingRules := make(map[string]struct{}, len(rules))
 	for _, r := range rules {
 		dst := r.Dst
 		if dst == nil {
-			dst = defaultDst
+			dst = getDefaultGlobalDst(family)
 		}
 
 		existingRules[dst.String()] = struct{}{}
@@ -627,11 +620,7 @@ func collectRoutesFromTable(family, table, linkIndex int) (map[string]netlink.Ro
 
 	for _, r := range rs {
 		if r.LinkIndex == linkIndex {
-			rDst := r.Dst
-			if rDst == nil {
-				rDst = getDefaultGlobalDst(family)
-			}
-			res[rDst.String()] = r
+			res[r.Dst.String()] = r
 		}
 	}
 	return res, nil
