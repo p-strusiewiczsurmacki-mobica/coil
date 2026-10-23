@@ -28,6 +28,7 @@ type EgressWatcher struct {
 	EgressPort      int
 	Backend         string
 	OriginatingOnly bool
+	ClusterNetworks *netfilter.ClusterNetworks
 }
 
 // +kubebuilder:rbac:groups=coil.cybozu.com,resources=egresses,verbs=get;list;watch
@@ -204,12 +205,22 @@ func (r *EgressWatcher) hook(gwn gwNets, log *logr.Logger) func(ipv4, ipv6 net.I
 		if !ft.IsInitialized() {
 			return errors.New("fouTunnel hasn't been initialized")
 		}
-		cl := netfilter.NewNatClient(ipv4, ipv6, nil, r.Backend, func(message string) {
+		cl := netfilter.NewNatClient(ipv4, ipv6, r.ClusterNetworks, r.Backend, func(message string) {
 			log.Info(message)
 		})
+
 		initialized, err := cl.IsInitialized()
 		if !initialized {
 			return fmt.Errorf("natClient hasn't been initialized: %w", err)
+		}
+
+		if err := cl.SyncInClusterRules(); err != nil {
+			return fmt.Errorf("natClient was unable to sync in-cluster rules: %w", err)
+		}
+
+		inClusterInitialized, err := cl.IsInClusterInitialized()
+		if !inClusterInitialized {
+			return fmt.Errorf("natClient's in-cluster rules haven't been initialized: %w", err)
 		}
 
 		link, err := ft.AddPeer(gwn.gateway, gwn.sportAuto)
