@@ -26,6 +26,10 @@ type EgressSpec struct {
 	// +kubebuilder:validation:MinItems=1
 	Destinations []string `json:"destinations"`
 
+	// Excluded is a list of IP networks in CIDR format that will be excluded from egress destinations.
+	// +optional
+	Excluded []string `json:"excluded,omitempty"`
+
 	// Replicas is the desired number of egress (SNAT) pods.
 	// Defaults to 1.
 	// +kubebuilder:default=1
@@ -111,6 +115,14 @@ func (es EgressSpec) validate() field.ErrorList {
 
 	pp := p.Child("destinations")
 	for i, na := range es.Destinations {
+		_, _, err := net.ParseCIDR(na)
+		if err != nil {
+			allErrs = append(allErrs, field.Invalid(pp.Index(i), na, err.Error()))
+		}
+	}
+
+	pp = p.Child("excluded")
+	for i, na := range es.Excluded {
 		_, _, err := net.ParseCIDR(na)
 		if err != nil {
 			allErrs = append(allErrs, field.Invalid(pp.Index(i), na, err.Error()))

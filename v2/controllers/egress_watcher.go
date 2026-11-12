@@ -28,6 +28,11 @@ type EgressWatcher struct {
 	EgressPort      int
 	Backend         string
 	OriginatingOnly bool
+	// ClusterNetworks overrides the default in-cluster networks excluded from
+	// egress NAT (see netfilter.NewNatClient). It must be kept in sync with
+	// the value passed to runners.NewNATSetup, since both must agree on which
+	// destinations use the narrow (117) vs wide (118) routing table.
+	ClusterNetworks *netfilter.ClusterNetworks
 }
 
 // +kubebuilder:rbac:groups=coil.cybozu.com,resources=egresses,verbs=get;list;watch
@@ -153,10 +158,11 @@ func (r *EgressWatcher) reconcileEgressClient(ctx context.Context, eg *coilv2.Eg
 }
 
 type gwNets struct {
-	gateway         net.IP
-	networks        []*net.IPNet
-	sportAuto       bool
-	originatingOnly bool
+	gateway          net.IP
+	networks         []*net.IPNet
+	excludedNetworks *netfilter.ClusterNetworks
+	sportAuto        bool
+	originatingOnly  bool
 }
 
 func (r *EgressWatcher) getHooks(ctx context.Context, eg *coilv2.Egress, logger *logr.Logger) ([]nodenet.SetupHook, error) {
@@ -170,6 +176,7 @@ func (r *EgressWatcher) getHooks(ctx context.Context, eg *coilv2.Egress, logger 
 	hooks := []nodenet.SetupHook{}
 	for _, clusterIP := range svc.Spec.ClusterIPs {
 		var subnets []*net.IPNet
+
 		svcIP := net.ParseIP(clusterIP)
 		if svcIP == nil {
 			return nil, fmt.Errorf("invalid ClusterIP in Service %s %s", eg.Name, svc.Spec.ClusterIP)
@@ -185,8 +192,19 @@ func (r *EgressWatcher) getHooks(ctx context.Context, eg *coilv2.Egress, logger 
 			}
 		}
 
+		excludedNetworks, err := netfilter.ParseClusterNetworks(eg.Spec.Excluded)
+		if err != nil {
+			return nil, fmt.Errorf("invalid network in Egress %s: %w", eg.Name, err)
+		}
+
 		if len(subnets) > 0 {
-			gw = gwNets{gateway: svcIP, networks: subnets, sportAuto: eg.Spec.FouSourcePortAuto, originatingOnly: r.OriginatingOnly}
+			gw = gwNets{
+				gateway:          svcIP,
+				networks:         subnets,
+				excludedNetworks: excludedNetworks,
+				sportAuto:        eg.Spec.FouSourcePortAuto,
+				originatingOnly:  r.OriginatingOnly,
+			}
 			hooks = append(hooks, r.hook(gw, logger))
 		}
 	}
@@ -204,7 +222,12 @@ func (r *EgressWatcher) hook(gwn gwNets, log *logr.Logger) func(ipv4, ipv6 net.I
 		if !ft.IsInitialized() {
 			return errors.New("fouTunnel hasn't been initialized")
 		}
-		cl := netfilter.NewNatClient(ipv4, ipv6, nil, r.Backend, func(message string) {
+
+		excludedNetworks := &netfilter.ClusterNetworks{}
+		excludedNetworks.Add(r.ClusterNetworks)
+		excludedNetworks.Add(gwn.excludedNetworks)
+
+		cl := netfilter.NewNatClient(ipv4, ipv6, excludedNetworks, r.Backend, func(message string) {
 			log.Info(message)
 		})
 		initialized, err := cl.IsInitialized()
