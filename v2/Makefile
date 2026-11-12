@@ -90,6 +90,7 @@ test-nat:
 .PHONY: test-integration
 test-integration:
 	$(SUDO) go test -tags=privileged -count 1 -v ./pkg/test/...
+	$(SUDO) go test -tags=privileged -count 1 -v -run TestEgressWatcherHook ./controllers/
 
 .PHONY: check-generate
 check-generate:
@@ -182,7 +183,8 @@ config/rbac/coil-egress-controller-certs_role.yaml: $(COIL_EGRESS_CONTROLLER_CER
 
 COILD_DEPENDS = controllers/blockrequest_watcher.go \
 	pkg/ipam/node.go \
-	runners/coild_server.go
+	runners/coild_server.go \
+	cmd/coild/sub/service_cidrs.go
 
 config/rbac/coild_role.yaml: $(COILD_DEPENDS)
 	-rm -rf work
@@ -191,17 +193,20 @@ config/rbac/coild_role.yaml: $(COILD_DEPENDS)
 	sed '0,/^package/s/.*/package work/' controllers/egress_watcher.go > work/egress_watcher.go
 	sed '0,/^package/s/.*/package work/' pkg/ipam/node.go > work/node.go
 	sed '0,/^package/s/.*/package work/' runners/coild_server.go > work/coild_server.go
+	sed '0,/^package/s/.*/package work/' cmd/coild/sub/service_cidrs.go > work/service_cidrs.go
 	$(CONTROLLER_GEN) rbac:roleName=coild paths=./work output:stdout > $@
 	rm -rf work
 
 EGRESS_COILD_DEPENDS = controllers/egress_watcher.go \
-	runners/coild_server.go
+	runners/coild_server.go \
+	cmd/coild/sub/service_cidrs.go
 
 config/rbac/egress/coild_role.yaml: $(EGRESS_COILD_DEPENDS)
 	-rm -rf work
 	mkdir work
 	sed '0,/^package/s/.*/package work/' controllers/egress_watcher.go > work/egress_watcher.go
 	sed '0,/^package/s/.*/package work/' runners/coild_server.go > work/coild_server.go
+	sed '0,/^package/s/.*/package work/' cmd/coild/sub/service_cidrs.go > work/service_cidrs.go
 	$(CONTROLLER_GEN) rbac:roleName=coild paths=./work output:stdout > $@
 	rm -rf work
 

@@ -10,6 +10,32 @@ type ClusterNetworks struct {
 	v6 []*net.IPNet
 }
 
+var (
+	v4PrivateList = []*net.IPNet{
+		{IP: net.ParseIP("10.0.0.0").To4(), Mask: net.CIDRMask(8, 32)},
+		{IP: net.ParseIP("172.16.0.0").To4(), Mask: net.CIDRMask(12, 32)},
+		{IP: net.ParseIP("192.168.0.0").To4(), Mask: net.CIDRMask(16, 32)},
+	}
+	v6PrivateList = []*net.IPNet{
+		{IP: net.ParseIP("fc00::"), Mask: net.CIDRMask(7, 128)},
+	}
+)
+
+// effectiveClusterNetworks returns the configured networks with defaults for
+// any family that has no configured networks.
+func effectiveClusterNetworks(cn *ClusterNetworks) *ClusterNetworks {
+	effective := &ClusterNetworks{v4: v4PrivateList, v6: v6PrivateList}
+	if cn != nil {
+		if len(cn.v4) > 0 {
+			effective.v4 = cn.v4
+		}
+		if len(cn.v6) > 0 {
+			effective.v6 = cn.v6
+		}
+	}
+	return effective
+}
+
 func (cn *ClusterNetworks) IsEmpty() bool {
 	return len(cn.v4) == 0 && len(cn.v6) == 0
 }
@@ -41,7 +67,7 @@ func ParseClusterNetworks(cidrs []string) (*ClusterNetworks, error) {
 	return cn, nil
 }
 
-// ValidateClusterNetworks checks that clusterNetworks does not exceed
+// validate checks that clusterNetworks does not exceed
 // MaxInClusterNetworks entries per IP family.
 func (cn *ClusterNetworks) validate() error {
 	if len(cn.v4) > MaxInClusterNetworks {
