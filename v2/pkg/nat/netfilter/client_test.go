@@ -890,7 +890,7 @@ func checkOriginatingOnlyNFTablesRules(link netlink.Link, family int) error {
 func checkNatClientRoutesCleared(nc *NatClient) error {
 	familyStr := []string{"IPv4", "IPv6"}
 	for i, family := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
-		for _, table := range []int{ncNarrowTableID, ncWideTableID} {
+		for _, table := range []int{NcNarrowTableID, NcWideTableID} {
 			routes, err := netlink.RouteListFiltered(family, &netlink.Route{Table: table}, netlink.RT_FILTER_TABLE)
 			if err != nil {
 				return err
@@ -1090,12 +1090,12 @@ func TestNatClient_MigrateRoutesWithClusterNetworks(t *testing.T) {
 			narrowCIDR: "198.51.0.0/16",
 			wideCIDR:   "10.0.0.0/8",
 			wantNarrow: []routeTuple{
-				{netlink.FAMILY_V4, ncNarrowTableID, "198.51.100.0/24", "mig4-public"},
-				{netlink.FAMILY_V4, ncWideTableID, "203.0.113.0/24", "mig4-public"},
+				{netlink.FAMILY_V4, NcNarrowTableID, "198.51.100.0/24", "mig4-public"},
+				{netlink.FAMILY_V4, NcWideTableID, "203.0.113.0/24", "mig4-public"},
 			},
 			wantWide: []routeTuple{
-				{netlink.FAMILY_V4, ncWideTableID, "198.51.100.0/24", "mig4-public"},
-				{netlink.FAMILY_V4, ncWideTableID, "203.0.113.0/24", "mig4-public"},
+				{netlink.FAMILY_V4, NcWideTableID, "198.51.100.0/24", "mig4-public"},
+				{netlink.FAMILY_V4, NcWideTableID, "203.0.113.0/24", "mig4-public"},
 			},
 		},
 		{
@@ -1106,12 +1106,12 @@ func TestNatClient_MigrateRoutesWithClusterNetworks(t *testing.T) {
 			narrowCIDR: "2001:db8::/32",
 			wideCIDR:   "fd00::/8",
 			wantNarrow: []routeTuple{
-				{netlink.FAMILY_V6, ncNarrowTableID, "2001:db8:1::/64", "mig6-public"},
-				{netlink.FAMILY_V6, ncWideTableID, "2001:db9::/64", "mig6-public"},
+				{netlink.FAMILY_V6, NcNarrowTableID, "2001:db8:1::/64", "mig6-public"},
+				{netlink.FAMILY_V6, NcWideTableID, "2001:db9::/64", "mig6-public"},
 			},
 			wantWide: []routeTuple{
-				{netlink.FAMILY_V6, ncWideTableID, "2001:db8:1::/64", "mig6-public"},
-				{netlink.FAMILY_V6, ncWideTableID, "2001:db9::/64", "mig6-public"},
+				{netlink.FAMILY_V6, NcWideTableID, "2001:db8:1::/64", "mig6-public"},
+				{netlink.FAMILY_V6, NcWideTableID, "2001:db9::/64", "mig6-public"},
 			},
 		},
 		{
@@ -1122,10 +1122,10 @@ func TestNatClient_MigrateRoutesWithClusterNetworks(t *testing.T) {
 			narrowCIDR: "0.0.0.0/0",
 			wideCIDR:   "10.0.0.0/8",
 			wantNarrow: []routeTuple{
-				{netlink.FAMILY_V4, ncNarrowTableID, "0.0.0.0/0", "mig4-default"},
+				{netlink.FAMILY_V4, NcNarrowTableID, "0.0.0.0/0", "mig4-default"},
 			},
 			wantWide: []routeTuple{
-				{netlink.FAMILY_V4, ncWideTableID, "0.0.0.0/0", "mig4-default"},
+				{netlink.FAMILY_V4, NcWideTableID, "0.0.0.0/0", "mig4-default"},
 			},
 		},
 		{
@@ -1136,10 +1136,10 @@ func TestNatClient_MigrateRoutesWithClusterNetworks(t *testing.T) {
 			narrowCIDR: "::/0",
 			wideCIDR:   "fd00::/8",
 			wantNarrow: []routeTuple{
-				{netlink.FAMILY_V6, ncNarrowTableID, "::/0", "mig6-default"},
+				{netlink.FAMILY_V6, NcNarrowTableID, "::/0", "mig6-default"},
 			},
 			wantWide: []routeTuple{
-				{netlink.FAMILY_V6, ncWideTableID, "::/0", "mig6-default"},
+				{netlink.FAMILY_V6, NcWideTableID, "::/0", "mig6-default"},
 			},
 		},
 	}
@@ -1441,8 +1441,8 @@ func TestNatClient_IsInClusterInitialized(t *testing.T) {
 	}
 	client := newTestClient(t, networks)
 	toDelete := []*netlink.Rule{
-		newRule(netlink.FAMILY_V4, mainTableID, 2000),
-		newRule(netlink.FAMILY_V6, mainTableID, 2000),
+		newRule(netlink.FAMILY_V4, MainTableID, 2000),
+		newRule(netlink.FAMILY_V6, MainTableID, 2000),
 	}
 	toDelete[0].Dst = testCIDR(t, "10.20.0.0/16")
 	toDelete[1].Dst = testCIDR(t, "fd20::/64")
@@ -1506,7 +1506,7 @@ func assertClusterRules(want []clusterRuleTuple) error {
 func clusterRulesSnapshot() ([]clusterRuleTuple, error) {
 	var got []clusterRuleTuple
 	for _, family := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
-		rules, err := netlink.RuleListFiltered(family, &netlink.Rule{Table: mainTableID}, netlink.RT_FILTER_TABLE)
+		rules, err := netlink.RuleListFiltered(family, &netlink.Rule{Table: MainTableID}, netlink.RT_FILTER_TABLE)
 		if err != nil {
 			return nil, fmt.Errorf("list family %d main-table rules: %w", family, err)
 		}
@@ -1554,16 +1554,16 @@ func TestNatClient_ReconcileRoutes(t *testing.T) {
 			name:       "remove IPv6 routes without disturbing IPv4 on another link",
 			removeLink: "route-v6",
 			remaining: []routeTuple{
-				{netlink.FAMILY_V4, ncNarrowTableID, "10.2.0.0/16", "route-v4"},
-				{netlink.FAMILY_V4, ncWideTableID, "0.0.0.0/0", "route-v4"},
+				{netlink.FAMILY_V4, NcNarrowTableID, "10.2.0.0/16", "route-v4"},
+				{netlink.FAMILY_V4, NcWideTableID, "0.0.0.0/0", "route-v4"},
 			},
 		},
 		{
 			name:       "remove IPv4 routes without disturbing IPv6 on another link",
 			removeLink: "route-v4",
 			remaining: []routeTuple{
-				{netlink.FAMILY_V6, ncNarrowTableID, "fd02::/64", "route-v6"},
-				{netlink.FAMILY_V6, ncWideTableID, "::/0", "route-v6"},
+				{netlink.FAMILY_V6, NcNarrowTableID, "fd02::/64", "route-v6"},
+				{netlink.FAMILY_V6, NcWideTableID, "::/0", "route-v6"},
 			},
 		},
 	}
@@ -1595,10 +1595,10 @@ func TestNatClient_ReconcileRoutes(t *testing.T) {
 				}
 
 				if err := assertRoutes([]routeTuple{
-					{netlink.FAMILY_V4, ncNarrowTableID, "10.2.0.0/16", "route-v4"},
-					{netlink.FAMILY_V4, ncWideTableID, "0.0.0.0/0", "route-v4"},
-					{netlink.FAMILY_V6, ncNarrowTableID, "fd02::/64", "route-v6"},
-					{netlink.FAMILY_V6, ncWideTableID, "::/0", "route-v6"},
+					{netlink.FAMILY_V4, NcNarrowTableID, "10.2.0.0/16", "route-v4"},
+					{netlink.FAMILY_V4, NcWideTableID, "0.0.0.0/0", "route-v4"},
+					{netlink.FAMILY_V6, NcNarrowTableID, "fd02::/64", "route-v6"},
+					{netlink.FAMILY_V6, NcWideTableID, "::/0", "route-v6"},
 				}); err != nil {
 					return fmt.Errorf("initial route state: %w", err)
 				}
@@ -1623,10 +1623,10 @@ func TestNatClient_ReconcileRoutes(t *testing.T) {
 				}
 
 				if err := assertRoutes([]routeTuple{
-					{netlink.FAMILY_V4, ncNarrowTableID, "10.2.0.0/16", "route-v4"},
-					{netlink.FAMILY_V4, ncWideTableID, "0.0.0.0/0", "route-v4"},
-					{netlink.FAMILY_V6, ncNarrowTableID, "fd02::/64", "route-v6"},
-					{netlink.FAMILY_V6, ncWideTableID, "::/0", "route-v6"},
+					{netlink.FAMILY_V4, NcNarrowTableID, "10.2.0.0/16", "route-v4"},
+					{netlink.FAMILY_V4, NcWideTableID, "0.0.0.0/0", "route-v4"},
+					{netlink.FAMILY_V6, NcNarrowTableID, "fd02::/64", "route-v6"},
+					{netlink.FAMILY_V6, NcWideTableID, "::/0", "route-v6"},
 				}); err != nil {
 					return fmt.Errorf("initial route state: %w", err)
 				}
@@ -1662,8 +1662,8 @@ func TestNatClient_ReconcileRoutesTracksDesiredFamilies(t *testing.T) {
 			return fmt.Errorf("initial dual-stack SyncNat: %w", err)
 		}
 		if err := assertRoutes([]routeTuple{
-			{netlink.FAMILY_V4, ncNarrowTableID, "10.2.0.0/16", "route-family"},
-			{netlink.FAMILY_V6, ncNarrowTableID, "fd02::/64", "route-family"},
+			{netlink.FAMILY_V4, NcNarrowTableID, "10.2.0.0/16", "route-family"},
+			{netlink.FAMILY_V6, NcNarrowTableID, "fd02::/64", "route-family"},
 		}); err != nil {
 			return fmt.Errorf("initial dual-stack routes: %w", err)
 		}
@@ -1672,7 +1672,7 @@ func TestNatClient_ReconcileRoutesTracksDesiredFamilies(t *testing.T) {
 			return fmt.Errorf("sync IPv4-only destinations: %w", err)
 		}
 		if err := assertRoutes([]routeTuple{
-			{netlink.FAMILY_V4, ncNarrowTableID, "10.2.0.0/16", "route-family"},
+			{netlink.FAMILY_V4, NcNarrowTableID, "10.2.0.0/16", "route-family"},
 		}); err != nil {
 			return fmt.Errorf("routes after dual-stack to IPv4-only destinations: %w", err)
 		}
@@ -1681,7 +1681,7 @@ func TestNatClient_ReconcileRoutesTracksDesiredFamilies(t *testing.T) {
 			return fmt.Errorf("sync IPv6-only destinations: %w", err)
 		}
 		return assertRoutes([]routeTuple{
-			{netlink.FAMILY_V6, ncNarrowTableID, "fd02::/64", "route-family"},
+			{netlink.FAMILY_V6, NcNarrowTableID, "fd02::/64", "route-family"},
 		})
 	}); err != nil {
 		t.Fatal(err)
@@ -1738,7 +1738,7 @@ func testCIDR(t *testing.T, cidr string) *net.IPNet {
 func assertRoutes(want []routeTuple) error {
 	var got []routeTuple
 	for _, family := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
-		for _, table := range []int{ncNarrowTableID, ncWideTableID} {
+		for _, table := range []int{NcNarrowTableID, NcWideTableID} {
 			routes, err := netlink.RouteListFiltered(family, &netlink.Route{Table: table}, netlink.RT_FILTER_TABLE)
 			if err != nil {
 				return fmt.Errorf("list family %d table %d routes: %w", family, table, err)
@@ -1805,9 +1805,9 @@ func checkInitRulesForFamily(family int, inCluster []*net.IPNet) error {
 
 	// Check fixed rules
 	expectedRules := map[int]int{
-		ncLinkLocalPrio: mainTableID,
-		ncNarrowPrio:    ncNarrowTableID,
-		ncWidePrio:      ncWideTableID,
+		ncLinkLocalPrio: MainTableID,
+		ncNarrowPrio:    NcNarrowTableID,
+		NcWidePrio:      NcWideTableID,
 	}
 
 	for prio, expectedTable := range expectedRules {
@@ -1822,13 +1822,13 @@ func checkInitRulesForFamily(family int, inCluster []*net.IPNet) error {
 
 	// Check inCluster rules
 	for i := range inCluster {
-		prio := ncLocalPrioBase + i
+		prio := NcLocalPrioBase + i
 		r, ok := rm[prio]
 		if !ok {
 			return fmt.Errorf("no inCluster rule at priority %d", prio)
 		}
-		if r.Table != mainTableID {
-			return fmt.Errorf("inCluster rule at priority %d should point to main table %d, got %d", prio, mainTableID, r.Table)
+		if r.Table != MainTableID {
+			return fmt.Errorf("inCluster rule at priority %d should point to main table %d, got %d", prio, MainTableID, r.Table)
 		}
 	}
 
@@ -1851,13 +1851,13 @@ func checkNatClientRoutesByFamily(clientIP net.IP, inCluster, subnets []*net.IPN
 		if slices.ContainsFunc(inCluster, func(n *net.IPNet) bool {
 			return n.Contains(sn.IP)
 		}) {
-			subenetsByTable[ncNarrowTableID] = append(subenetsByTable[ncNarrowTableID], sn)
+			subenetsByTable[NcNarrowTableID] = append(subenetsByTable[NcNarrowTableID], sn)
 		} else {
-			subenetsByTable[ncWideTableID] = append(subenetsByTable[ncWideTableID], sn)
+			subenetsByTable[NcWideTableID] = append(subenetsByTable[NcWideTableID], sn)
 		}
 	}
 
-	for _, table := range []int{ncNarrowTableID, ncWideTableID} {
+	for _, table := range []int{NcNarrowTableID, NcWideTableID} {
 		rs, err := netlink.RouteListFiltered(family, &netlink.Route{Table: table}, netlink.RT_FILTER_TABLE)
 		if err != nil {
 			return err
