@@ -53,17 +53,6 @@ var (
 )
 
 var (
-	v4PrivateList = []*net.IPNet{
-		{IP: net.ParseIP("10.0.0.0").To4(), Mask: net.CIDRMask(8, 32)},
-		{IP: net.ParseIP("172.16.0.0").To4(), Mask: net.CIDRMask(12, 32)},
-		{IP: net.ParseIP("192.168.0.0").To4(), Mask: net.CIDRMask(16, 32)},
-	}
-	v6PrivateList = []*net.IPNet{
-		{IP: net.ParseIP("fc00::"), Mask: net.CIDRMask(7, 128)},
-	}
-)
-
-var (
 	v4LinkLocal = &net.IPNet{IP: net.ParseIP("169.254.0.0"), Mask: net.CIDRMask(16, 32)}
 	v6LinkLocal = &net.IPNet{IP: net.ParseIP("fe80::"), Mask: net.CIDRMask(10, 128)}
 )
@@ -80,21 +69,10 @@ type NatClient struct {
 
 // NewNatClient creates a new NatClient.
 func NewNatClient(ipv4, ipv6 net.IP, clusterNetworks *ClusterNetworks, backend string, logFunc func(string)) *NatClient {
-	inCluster := &ClusterNetworks{v4PrivateList, v6PrivateList}
-
-	if clusterNetworks != nil {
-		if len(clusterNetworks.v4) > 0 {
-			inCluster.v4 = clusterNetworks.v4
-		}
-		if len(clusterNetworks.v6) > 0 {
-			inCluster.v6 = clusterNetworks.v6
-		}
-	}
-
 	return &NatClient{
 		ipv4:      ipv4,
 		ipv6:      ipv6,
-		inCluster: inCluster,
+		inCluster: effectiveClusterNetworks(clusterNetworks),
 		backend:   backend,
 		logFunc:   logFunc,
 	}
@@ -169,17 +147,13 @@ func (n *NatClient) SyncNat(link netlink.Link, subnets []*net.IPNet, originating
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	families := make(map[int]struct{})
-	if n.ipv4 != nil {
-		families[netlink.FAMILY_V4] = struct{}{}
-	}
-	if n.ipv6 != nil {
-		families[netlink.FAMILY_V6] = struct{}{}
+	type subnet struct {
+		family  int
+		subnets []*net.IPNet
 	}
 
 	subnetsV4 := []*net.IPNet{}
 	subnetsV6 := []*net.IPNet{}
-
 	for _, s := range subnets {
 		if s.IP.To4() != nil {
 			subnetsV4 = append(subnetsV4, s)
@@ -188,18 +162,21 @@ func (n *NatClient) SyncNat(link netlink.Link, subnets []*net.IPNet, originating
 		}
 	}
 
-	for f := range families {
-		s := subnetsV4
-		if f == netlink.FAMILY_V6 {
-			s = subnetsV6
-		}
+	families := []subnet{}
+	if n.ipv4 != nil {
+		families = append(families, subnet{family: netlink.FAMILY_V4, subnets: subnetsV4})
+	}
+	if n.ipv6 != nil {
+		families = append(families, subnet{family: netlink.FAMILY_V6, subnets: subnetsV6})
+	}
 
-		routesBySubnet, err := collectRoutesBySubnet(link.Attrs().Index, f)
+	for _, f := range families {
+		routesBySubnet, err := collectRoutesBySubnet(link.Attrs().Index, f.family)
 		if err != nil {
 			return err
 		}
 
-		if err := n.syncNat(link, s, originatingOnly, routesBySubnet, f); err != nil {
+		if err := n.syncNat(link, f.subnets, originatingOnly, routesBySubnet, f.family); err != nil {
 			return err
 		}
 	}

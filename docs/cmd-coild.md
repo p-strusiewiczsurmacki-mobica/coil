@@ -53,13 +53,31 @@ outside RFC1918) for Pods, Services, or Nodes, the IPv6 (or IPv4) default
 above does not cover them, so an `Egress` with a wide destination like
 `::/0` would route all Pod/Service/Node traffic through the NAT tunnel.
 Use `--cluster-networks` to override the default in-cluster networks with
-your cluster's actual Pod/Service/Node CIDRs.
+your cluster's actual Pod/Service/Node CIDRs. FoU sends outer packets to the
+egress `Service` ClusterIP, so the effective in-cluster networks must cover
+the full Service CIDR even when custom Pod or Node ranges are configured.
+Otherwise, a broad default destination can route those outer packets back
+into the tunnel and cause timeouts. This Service CIDR check does not validate
+that Pod and Node ranges are configured correctly.
 
 The override applies per IP family: if `--cluster-networks` contains at
 least one network of a given family, it replaces the default for that
 family only, while the other family keeps its built-in default. For
 example, `--cluster-networks=2001:db8:1234::/48` overrides only the IPv6
 default; IPv4 keeps using RFC1918.
+
+With `--enable-egress=true` (the default), `coild` requires the in-cluster
+networks to cover every `ServiceCIDR` of the IP families used by an Egress
+for which the client Pod has an address. If they don't, NAT setup for the
+affected Pods fails and is retried until `--cluster-networks` is set to cover
+the missing CIDRs.
+
+`coild` needs `list` and `watch` permissions on `servicecidrs`, which the
+supplied ClusterRoles include, and the cluster must serve the
+`networking.k8s.io/v1` `ServiceCIDR` API. With egress enabled, `coild` starts an
+independent ServiceCIDR informer; its initial synchronization does not block
+the CNI server or ordinary Pod startup. If the initial ServiceCIDR listing
+fails, egress NAT setup remains unavailable until discovery succeeds.
 
 Each in-cluster network consumes one `ip rule` priority, so at most 100
 networks per IP family are supported.

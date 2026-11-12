@@ -80,6 +80,22 @@ func getResource(ns, resource, name, label string, obj any) error {
 	return json.Unmarshal(data, obj)
 }
 
+// ns is optional
+func getEvents(ns, name string, obj any) error {
+	var args []string
+	if ns != "" {
+		args = append(args, "-n", ns)
+	}
+	args = append(args, "get", "events")
+	args = append(args, "--field-selector", "involvedObject.name="+name)
+	args = append(args, "-o", "json")
+	data, err := kubectl(args...)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, obj)
+}
+
 // ns, name, label are optional.  If name is empty, obj must be a list type.
 func getResourceSafe(ns, resource, name, label string, obj any) {
 	err := getResource(ns, resource, name, label, obj)
