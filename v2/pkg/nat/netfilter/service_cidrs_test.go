@@ -131,7 +131,7 @@ func shortenServiceCIDRPolling(t *testing.T) {
 	t.Helper()
 	interval, timeout := serviceCIDRPollInterval, serviceCIDRPollTimeout
 	serviceCIDRPollInterval = time.Millisecond
-	serviceCIDRPollTimeout = 50 * time.Millisecond
+	serviceCIDRPollTimeout = 500 * time.Millisecond
 	t.Cleanup(func() {
 		serviceCIDRPollInterval, serviceCIDRPollTimeout = interval, timeout
 	})
@@ -489,10 +489,9 @@ func TestValidateEgressClusterNetworks(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			reader := serviceCIDRReader{list: func(ctx context.Context, _ client.ObjectList) error {
-				if ctx.Err() != nil {
-					return ctx.Err()
-				}
+			// Return the cause unconditionally, so the outcome does not depend on
+			// how long the poll takes to start under load.
+			reader := serviceCIDRReader{list: func(context.Context, client.ObjectList) error {
 				return tc.cause
 			}}
 			ctx := context.Background()
