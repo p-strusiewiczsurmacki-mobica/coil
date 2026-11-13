@@ -3,7 +3,6 @@
 package controllers
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -40,7 +39,7 @@ func newHookNS(t *testing.T, ipv4, ipv6 net.IP) ns.NetNS {
 	})
 
 	err = netNS.Do(func(ns.NetNS) error {
-		ft := fou.NewFoUTunnel(hookTestEgressPort, ipv4, ipv6, nil)
+		ft := fou.NewClientFoUTunnel(hookTestEgressPort, ipv4, ipv6, nil)
 		if err := ft.Init(); err != nil {
 			return fmt.Errorf("fou Init failed: %w", err)
 		}
@@ -68,7 +67,7 @@ func applyHook(netNS ns.NetNS, ipv4, ipv6 net.IP, cn *netfilter.ClusterNetworks,
 			ClusterNetworks: cn,
 		}
 		logger := logr.Discard()
-		return r.hook(context.Background(), gw, &logger)(ipv4, ipv6)
+		return r.hook(gw, &logger)(ipv4, ipv6)
 	})
 }
 
