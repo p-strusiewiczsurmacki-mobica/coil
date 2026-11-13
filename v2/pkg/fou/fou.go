@@ -28,7 +28,8 @@ const (
 
 const fouDummy = "fou-dummy"
 
-func fouName(addr net.IP) string {
+// FouName returns the name of the Foo-over-UDP tunnel link for the given address.
+func FouName(addr net.IP) string {
 	if v4 := addr.To4(); v4 != nil {
 		return fmt.Sprintf("%s%x", FoU4LinkPrefix, []byte(v4))
 	}
@@ -229,7 +230,7 @@ func (t *fouTunnel) addPeer4(addr net.IP, sportAuto bool) (netlink.Link, error) 
 }
 
 func (t *fouTunnel) addOrRecreatePeer4(addr net.IP, sportAuto bool) (string, error) {
-	linkName := fouName(addr)
+	linkName := FouName(addr)
 
 	link, err := netlink.LinkByName(linkName)
 	if err == nil {
@@ -305,7 +306,7 @@ func (t *fouTunnel) addPeer6(addr net.IP, sportAuto bool) (netlink.Link, error) 
 }
 
 func (t *fouTunnel) addOrRecreatePeer6(addr net.IP, sportAuto bool) (string, error) {
-	linkName := fouName(addr)
+	linkName := FouName(addr)
 
 	link, err := netlink.LinkByName(linkName)
 	if err == nil {
@@ -477,7 +478,7 @@ func renameDevice(from, to string) error {
 }
 
 func (t *fouTunnel) DelPeer(addr net.IP) error {
-	linkName := fouName(addr)
+	linkName := FouName(addr)
 
 	link, err := netlink.LinkByName(linkName)
 	if err == nil {
