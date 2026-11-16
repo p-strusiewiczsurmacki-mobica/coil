@@ -246,7 +246,7 @@ var _ = Describe("Coild server", func() {
 			AddressBlockGCInterval: 10 * time.Second,
 		}
 
-		serv := NewCoildServer(l, mgr, nodeIPAM, podNet, natsetup, cfg, logger, mockAlias, "test-node")
+		serv := NewCoildServer(l, mgr, nodeIPAM, podNet, natsetup, cfg, logger, mockAlias, "test-node", nil)
 		err = mgr.Add(serv)
 		Expect(err).ToNot(HaveOccurred())
 
@@ -631,7 +631,7 @@ var _ = Describe("shutdown route cleanup", func() {
 			ClearRoutesOnShutdown:  clearRoutes,
 		}
 
-		serv := NewCoildServer(l, mgr, nodeIPAM, &mockPodNetwork{}, &mockNATSetup{}, servCfg, logger, mockAlias, nodeName)
+		serv := NewCoildServer(l, mgr, nodeIPAM, &mockPodNetwork{}, &mockNATSetup{}, servCfg, logger, mockAlias, nodeName, nil)
 		err = mgr.Add(serv)
 		Expect(err).ToNot(HaveOccurred())
 

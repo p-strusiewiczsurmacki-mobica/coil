@@ -53,12 +53,15 @@ type NATSetup interface {
 
 // NewNATSetup creates a NATSetup using fou and nat/netfilter packages.
 // `port` is the UDP port number to accept Foo-over-UDP packets.
-func NewNATSetup(port int) NATSetup {
-	return natSetup{port: port}
+// `clusterNetworks` overrides the default in-cluster networks excluded from
+// egress NAT. It may be nil to keep the defaults.
+func NewNATSetup(port int, clusterNetworks *netfilter.ClusterNetworks) NATSetup {
+	return natSetup{port: port, clusterNetworks: clusterNetworks}
 }
 
 type natSetup struct {
-	port int
+	port            int
+	clusterNetworks *netfilter.ClusterNetworks
 }
 
 func (n natSetup) Hook(l []GWNets, backend string, log *zap.Logger) func(ipv4, ipv6 net.IP) error {
@@ -70,7 +73,7 @@ func (n natSetup) Hook(l []GWNets, backend string, log *zap.Logger) func(ipv4, i
 			return err
 		}
 
-		cl := netfilter.NewNatClient(ipv4, ipv6, nil, backend, func(message string) {
+		cl := netfilter.NewNatClient(ipv4, ipv6, n.clusterNetworks, backend, func(message string) {
 			log.Sugar().Info(message)
 		})
 		if err := cl.Init(); err != nil {
@@ -87,6 +90,7 @@ func (n natSetup) Hook(l []GWNets, backend string, log *zap.Logger) func(ipv4, i
 			if err != nil {
 				return err
 			}
+
 			if err := cl.SyncNat(link, gwn.Networks, gwn.OriginatingOnly); err != nil {
 				return err
 			}
@@ -98,19 +102,20 @@ func (n natSetup) Hook(l []GWNets, backend string, log *zap.Logger) func(ipv4, i
 
 // NewCoildServer returns an implementation of cnirpc.CNIServer for coild.
 func NewCoildServer(l net.Listener, mgr manager.Manager, nodeIPAM ipam.NodeIPAM, podNet nodenet.PodNetwork, setup NATSetup, cfg *config.Config, logger *zap.Logger,
-	aliasFunc func(conf *nodenet.PodNetConf, ifName string) error, nodeName string,
+	aliasFunc func(conf *nodenet.PodNetConf, ifName string) error, nodeName string, clusterNetworkValidationFunc func(context.Context) error,
 ) manager.Runnable {
 	return &coildServer{
-		listener:  l,
-		apiReader: mgr.GetAPIReader(),
-		client:    mgr.GetClient(),
-		nodeIPAM:  nodeIPAM,
-		podNet:    podNet,
-		natSetup:  setup,
-		logger:    logger,
-		cfg:       cfg,
-		aliasFunc: aliasFunc,
-		nodeName:  nodeName,
+		listener:                     l,
+		apiReader:                    mgr.GetAPIReader(),
+		client:                       mgr.GetClient(),
+		nodeIPAM:                     nodeIPAM,
+		podNet:                       podNet,
+		natSetup:                     setup,
+		logger:                       logger,
+		cfg:                          cfg,
+		aliasFunc:                    aliasFunc,
+		nodeName:                     nodeName,
+		clusterNetworkValidationFunc: clusterNetworkValidationFunc,
 	}
 }
 
@@ -140,6 +145,8 @@ type coildServer struct {
 	cfg       *config.Config
 	aliasFunc func(conf *nodenet.PodNetConf, ifName string) error
 	nodeName  string
+
+	clusterNetworkValidationFunc func(context.Context) error
 }
 
 var _ manager.LeaderElectionRunnable = &coildServer{}
@@ -509,6 +516,12 @@ func (s *coildServer) getHook(ctx context.Context, pod *corev1.Pod) (nodenet.Set
 	}
 
 	if len(gwlist) > 0 {
+		if s.clusterNetworkValidationFunc != nil {
+			if err := s.clusterNetworkValidationFunc(ctx); err != nil {
+				return nil, newInternalError(err, "egress validation failed for cluster networks")
+			}
+		}
+
 		logger = logger.With(zap.String("pod_name", pod.Name), zap.String("pod_namespace", pod.Namespace))
 		logger.Sugar().Infof("gwlist: %v", gwlist)
 		return s.natSetup.Hook(gwlist, s.cfg.Backend, logger), nil
