@@ -768,6 +768,67 @@ func testEgress() {
 		testClusterNetworks(opts, v4, v6, port, false)
 	})
 
+	It("should not allow NAT traffic over foo-over-udp tunnel if not all service CIDRS are covered by the cluster networks", func() {
+		By("patching coild with a custom in-cluster network override")
+		v4, v6 := getNodeIPs("coil-control-plane")
+		Expect(func() error {
+			if v4 == "" && v6 == "" {
+				return errors.New("both IPv4 and IPv6 addresses are empty")
+			}
+			return nil
+		}()).ToNot(HaveOccurred())
+
+		customNetwork := "11.0.0.0/8,ff00::/16"
+
+		patchClusterNetworks(customNetwork)
+		defer unpatchClusterNetworks()
+
+		By("creating a dedicated Egress resource and NAT client for the custom cluster network")
+		_, err := kubectl("apply", "-f", "manifests/egress-cluster-networks.yaml")
+		Expect(err).ShouldNot(HaveOccurred())
+
+		defer func() {
+			_, err := kubectl("delete", "-f", "manifests/egress-cluster-networks.yaml")
+			Expect(err).ToNot(HaveOccurred())
+		}()
+
+		Eventually(func() error {
+			_, err := kubectl("-n", "internet", "rollout", "status", "deploy", "egress-cluster-networks")
+			return err
+		}).Should(Succeed())
+
+		Eventually(func() error {
+			pods := &corev1.PodList{}
+			if err := getResource("internet", "pods", "", "app.kubernetes.io/instance=egress-cluster-networks", pods); err != nil {
+				return err
+			}
+			for _, p := range pods.Items {
+				if p.Status.Phase != corev1.PodRunning {
+					return fmt.Errorf("egress-cluster-networks pod %q not ready", p.Name)
+				}
+			}
+			return nil
+		}).Should(Succeed())
+
+		_, err = kubectl("apply", "-f", "manifests/nat-client-cluster-networks-failed.yaml")
+		Expect(err).ShouldNot(HaveOccurred())
+		By("checking the pod events")
+		Eventually(func() error {
+			events := &corev1.EventList{}
+			if err := getEvents("default", "nat-client-cluster-networks-failed", events); err != nil {
+				return fmt.Errorf("failed to get events: %w", err)
+			}
+
+			for i, e := range events.Items {
+				By(fmt.Sprintf("%d - %s", i, e.Message))
+				if strings.Contains(e.Message, "egress validation failed for cluster networks") {
+					return nil
+				}
+			}
+			return errors.New("cluster network validation did not fail as expected")
+		}, time.Second*120).Should(Succeed())
+	})
+
 	It(func(originatingOnly bool) string {
 		if originatingOnly {
 			return "should be able to provide ingress traffic"
