@@ -28,6 +28,9 @@ type EgressWatcher struct {
 	EgressPort      int
 	Backend         string
 	OriginatingOnly bool
+	ClusterNetworks *netfilter.ClusterNetworks
+
+	ClusterNetworksValidationFunc func(context.Context) error
 }
 
 // +kubebuilder:rbac:groups=coil.cybozu.com,resources=egresses,verbs=get;list;watch
@@ -126,7 +129,7 @@ func (r *EgressWatcher) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 func (r *EgressWatcher) reconcileEgressClient(ctx context.Context, eg *coilv2.Egress, pod *corev1.Pod, logger *logr.Logger) error {
 	logger.Info("Reconciling", "pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name))
 
-	hooks, err := r.getHooks(ctx, eg, logger)
+	gws, err := r.getGwnets(ctx, eg)
 	if err != nil {
 		return fmt.Errorf("failed to setup NAT hook: %w", err)
 	}
@@ -143,9 +146,45 @@ func (r *EgressWatcher) reconcileEgressClient(ctx context.Context, eg *coilv2.Eg
 		}
 	}
 
-	for _, hook := range hooks {
-		if err := r.PodNet.Update(ipv4, ipv6, hook, pod); err != nil {
-			return fmt.Errorf("failed to update NAT configuration: %w", err)
+	var active, toDelete []gwNets
+
+	for _, gw := range gws {
+		if len(gw.networks) > 0 {
+			active = append(active, gw)
+		} else {
+			toDelete = append(toDelete, gw)
+		}
+	}
+
+	deletionHooks := r.getHooks(toDelete, logger)
+
+	for _, hook := range deletionHooks {
+		if err := r.PodNet.Update(
+			ipv4, ipv6, hook, pod,
+		); err != nil {
+			logger.Error(err, "deletion hook failed", "pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name))
+			return err
+		}
+	}
+
+	if len(active) == 0 {
+		return nil
+	}
+
+	// Outside PodNet.Update: no pod network lock or namespace entered.
+	if r.ClusterNetworksValidationFunc != nil {
+		if err := r.ClusterNetworksValidationFunc(ctx); err != nil {
+			return fmt.Errorf("cluster networks validation failed: %w", err)
+		}
+	}
+
+	activeHooks := r.getHooks(active, logger)
+
+	for _, hook := range activeHooks {
+		if err := r.PodNet.Update(
+			ipv4, ipv6, hook, pod,
+		); err != nil {
+			return err
 		}
 	}
 
@@ -159,15 +198,10 @@ type gwNets struct {
 	originatingOnly bool
 }
 
-func (r *EgressWatcher) getHooks(ctx context.Context, eg *coilv2.Egress, logger *logr.Logger) ([]nodenet.SetupHook, error) {
-	var gw gwNets
-	svc := &corev1.Service{}
-
-	if err := r.Get(ctx, client.ObjectKey{Namespace: eg.Namespace, Name: eg.Name}, svc); err != nil {
-		return nil, err
-	}
-
-	hooks := []nodenet.SetupHook{}
+// gatewayNetworks returns one gwNets per ClusterIP of svc. Each gwNets only
+// contains the Egress destinations whose IP family matches the ClusterIP.
+func (r *EgressWatcher) gatewayNetworks(eg *coilv2.Egress, svc *corev1.Service) ([]gwNets, error) {
+	var gws []gwNets
 	for _, clusterIP := range svc.Spec.ClusterIPs {
 		var subnets []*net.IPNet
 		svcIP := net.ParseIP(clusterIP)
@@ -185,13 +219,33 @@ func (r *EgressWatcher) getHooks(ctx context.Context, eg *coilv2.Egress, logger 
 			}
 		}
 
-		if len(subnets) > 0 {
-			gw = gwNets{gateway: svcIP, networks: subnets, sportAuto: eg.Spec.FouSourcePortAuto, originatingOnly: r.OriginatingOnly}
-			hooks = append(hooks, r.hook(gw, logger))
-		}
+		gws = append(gws, gwNets{gateway: svcIP, networks: subnets, sportAuto: eg.Spec.FouSourcePortAuto, originatingOnly: r.OriginatingOnly})
+	}
+	return gws, nil
+}
+
+func (r *EgressWatcher) getHooks(gws []gwNets, logger *logr.Logger) []nodenet.SetupHook {
+	hooks := []nodenet.SetupHook{}
+	for _, gw := range gws {
+		hooks = append(hooks, r.hook(gw, logger))
 	}
 
-	return hooks, nil
+	return hooks
+}
+
+func (r *EgressWatcher) getGwnets(ctx context.Context, eg *coilv2.Egress) ([]gwNets, error) {
+	svc := &corev1.Service{}
+
+	if err := r.Get(ctx, client.ObjectKey{Namespace: eg.Namespace, Name: eg.Name}, svc); err != nil {
+		return nil, err
+	}
+
+	gws, err := r.gatewayNetworks(eg, svc)
+	if err != nil {
+		return nil, err
+	}
+
+	return gws, nil
 }
 
 func (r *EgressWatcher) hook(gwn gwNets, log *logr.Logger) func(ipv4, ipv6 net.IP) error {
@@ -201,10 +255,16 @@ func (r *EgressWatcher) hook(gwn gwNets, log *logr.Logger) func(ipv4, ipv6 net.I
 		ft := fou.NewClientFoUTunnel(r.EgressPort, ipv4, ipv6, func(message string) {
 			log.Info(message)
 		})
+
+		if len(gwn.networks) == 0 {
+			return ft.DelPeer(gwn.gateway)
+		}
+
 		if !ft.IsInitialized() {
 			return errors.New("fouTunnel hasn't been initialized")
 		}
-		cl := netfilter.NewNatClient(ipv4, ipv6, nil, r.Backend, func(message string) {
+
+		cl := netfilter.NewNatClient(ipv4, ipv6, r.ClusterNetworks, r.Backend, func(message string) {
 			log.Info(message)
 		})
 		initialized, err := cl.IsInitialized()
@@ -214,6 +274,15 @@ func (r *EgressWatcher) hook(gwn gwNets, log *logr.Logger) func(ipv4, ipv6 net.I
 
 		if err := cl.EnsureFlowBasedDevRules(); err != nil {
 			return err
+		}
+
+		if err := cl.SyncInClusterRules(); err != nil {
+			return fmt.Errorf("natClient was unable to sync in-cluster rules: %w", err)
+		}
+
+		inClusterInitialized, err := cl.IsInClusterInitialized()
+		if !inClusterInitialized {
+			return fmt.Errorf("natClient's in-cluster rules haven't been initialized: %w", err)
 		}
 
 		link, err := ft.AddPeer(gwn.gateway, gwn.sportAuto)

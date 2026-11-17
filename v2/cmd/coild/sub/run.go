@@ -23,6 +23,7 @@ import (
 	"github.com/cybozu-go/coil/v2/pkg/constants"
 	"github.com/cybozu-go/coil/v2/pkg/indexing"
 	"github.com/cybozu-go/coil/v2/pkg/ipam"
+	"github.com/cybozu-go/coil/v2/pkg/nat/netfilter"
 	"github.com/cybozu-go/coil/v2/pkg/nodenet"
 	"github.com/cybozu-go/coil/v2/runners"
 )
@@ -61,6 +62,15 @@ func subMain() error {
 		return errors.New("configuration error: both IPAM and egress are disabled")
 	}
 
+	clusterNetworks, err := netfilter.ParseClusterNetworks(cfg.ClusterNetworks)
+	if err != nil {
+		return fmt.Errorf("invalid --cluster-networks: %w", err)
+	}
+
+	if !clusterNetworks.IsEmpty() {
+		setupLog.Info("using custom in-cluster networks for egress NAT", "networks", cfg.ClusterNetworks)
+	}
+
 	timeout := gracefulTimeout
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:         scheme,
@@ -73,6 +83,12 @@ func subMain() error {
 	})
 	if err != nil {
 		return err
+	}
+
+	ctx := context.Background()
+	var clusterNetworkValidationFunc func(context.Context) error
+	if cfg.EnableEgress {
+		clusterNetworkValidationFunc = netfilter.ValidateEgressClusterNetworks(mgr.GetClient(), clusterNetworks)
 	}
 
 	if err := mgr.AddHealthzCheck("ping", healthz.Ping); err != nil {
@@ -95,7 +111,6 @@ func subMain() error {
 		}
 	}
 
-	ctx := context.Background()
 	ipv4, ipv6, err := nodeIPAM.NodeInternalIP(ctx)
 	if err != nil {
 		return err
@@ -137,19 +152,22 @@ func subMain() error {
 	if err != nil {
 		return err
 	}
-	server := runners.NewCoildServer(l, mgr, nodeIPAM, podNet, runners.NewNATSetup(cfg.EgressPort), cfg, grpcLogger, runners.ProcessLinkAlias, nodeName)
+	server := runners.NewCoildServer(l, mgr, nodeIPAM, podNet, runners.NewNATSetup(cfg.EgressPort, clusterNetworks),
+		cfg, grpcLogger, runners.ProcessLinkAlias, nodeName, clusterNetworkValidationFunc)
 	if err := mgr.Add(server); err != nil {
 		return err
 	}
 
 	if cfg.EnableEgress {
 		egressWatcher := &controllers.EgressWatcher{
-			Client:          mgr.GetClient(),
-			NodeName:        nodeName,
-			PodNet:          podNet,
-			EgressPort:      cfg.EgressPort,
-			Backend:         cfg.Backend,
-			OriginatingOnly: cfg.OriginatingOnly,
+			Client:                        mgr.GetClient(),
+			NodeName:                      nodeName,
+			PodNet:                        podNet,
+			EgressPort:                    cfg.EgressPort,
+			Backend:                       cfg.Backend,
+			OriginatingOnly:               cfg.OriginatingOnly,
+			ClusterNetworks:               clusterNetworks,
+			ClusterNetworksValidationFunc: clusterNetworkValidationFunc,
 		}
 		if err := egressWatcher.SetupWithManager(mgr); err != nil {
 			return err
