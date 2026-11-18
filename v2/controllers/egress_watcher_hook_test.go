@@ -21,7 +21,19 @@ import (
 	"github.com/cybozu-go/coil/v2/pkg/nat/netfilter"
 )
 
-const hookTestEgressPort = 5555
+const (
+	// rule priorities
+	ncLocalPrioBase = 2000
+	ncWidePrio      = 2100
+
+	// table IDs
+	ncNarrowTableID = 117
+	ncWideTableID   = 118
+	mainTableID     = 254
+
+	// ports
+	hookTestEgressPort = 5555
+)
 
 // newHookNS creates a throw-away network namespace prepared the way coild
 // prepares a client Pod namespace: FoU tunnel and NAT client are initialized.
@@ -100,7 +112,7 @@ type tableRoute struct {
 // tableRoutes lists routes in the NatClient tables for family. Must run in netNS.
 func tableRoutes(family int) ([]tableRoute, error) {
 	var out []tableRoute
-	for _, table := range []int{netfilter.NcNarrowTableID, netfilter.NcWideTableID} {
+	for _, table := range []int{ncNarrowTableID, ncWideTableID} {
 		routes, err := netlink.RouteListFiltered(family, &netlink.Route{Table: table}, netlink.RT_FILTER_TABLE)
 		if err != nil {
 			return nil, err
@@ -332,13 +344,13 @@ func TestEgressWatcherHook(t *testing.T) {
 			t.Fatalf("hook failed: %v", err)
 		}
 		inNS(t, netNS, func() error {
-			rules, err := netlink.RuleListFiltered(netlink.FAMILY_V4, &netlink.Rule{Table: netfilter.MainTableID}, netlink.RT_FILTER_TABLE)
+			rules, err := netlink.RuleListFiltered(netlink.FAMILY_V4, &netlink.Rule{Table: mainTableID}, netlink.RT_FILTER_TABLE)
 			if err != nil {
 				return err
 			}
 			var got []string
 			for _, r := range rules {
-				if r.Priority < netfilter.NcLocalPrioBase || r.Priority >= netfilter.NcWidePrio || r.Dst == nil {
+				if r.Priority < ncLocalPrioBase || r.Priority >= ncWidePrio || r.Dst == nil {
 					continue
 				}
 				got = append(got, r.Dst.String())

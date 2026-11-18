@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -102,20 +103,21 @@ func (n natSetup) Hook(l []GWNets, backend string, log *zap.Logger) func(ipv4, i
 
 // NewCoildServer returns an implementation of cnirpc.CNIServer for coild.
 func NewCoildServer(l net.Listener, mgr manager.Manager, nodeIPAM ipam.NodeIPAM, podNet nodenet.PodNetwork, setup NATSetup, cfg *config.Config, logger *zap.Logger,
-	aliasFunc func(conf *nodenet.PodNetConf, ifName string) error, nodeName string, clusterNetworkValidationFunc func(context.Context) error,
+	aliasFunc func(conf *nodenet.PodNetConf, ifName string) error, nodeName string, clusterNetworks *netfilter.ClusterNetworks, serviceCIDRSource netfilter.ServiceCIDRSource,
 ) manager.Runnable {
 	return &coildServer{
-		listener:                     l,
-		apiReader:                    mgr.GetAPIReader(),
-		client:                       mgr.GetClient(),
-		nodeIPAM:                     nodeIPAM,
-		podNet:                       podNet,
-		natSetup:                     setup,
-		logger:                       logger,
-		cfg:                          cfg,
-		aliasFunc:                    aliasFunc,
-		nodeName:                     nodeName,
-		clusterNetworkValidationFunc: clusterNetworkValidationFunc,
+		listener:          l,
+		apiReader:         mgr.GetAPIReader(),
+		client:            mgr.GetClient(),
+		nodeIPAM:          nodeIPAM,
+		podNet:            podNet,
+		natSetup:          setup,
+		logger:            logger,
+		cfg:               cfg,
+		aliasFunc:         aliasFunc,
+		nodeName:          nodeName,
+		clusterNetworks:   clusterNetworks,
+		serviceCIDRSource: serviceCIDRSource,
 	}
 }
 
@@ -135,18 +137,18 @@ func init() {
 
 type coildServer struct {
 	cnirpc.UnimplementedCNIServer
-	listener  net.Listener
-	apiReader client.Reader
-	client    client.Client
-	nodeIPAM  ipam.NodeIPAM
-	podNet    nodenet.PodNetwork
-	natSetup  NATSetup
-	logger    *zap.Logger
-	cfg       *config.Config
-	aliasFunc func(conf *nodenet.PodNetConf, ifName string) error
-	nodeName  string
-
-	clusterNetworkValidationFunc func(context.Context) error
+	listener          net.Listener
+	apiReader         client.Reader
+	client            client.Client
+	nodeIPAM          ipam.NodeIPAM
+	podNet            nodenet.PodNetwork
+	natSetup          NATSetup
+	logger            *zap.Logger
+	cfg               *config.Config
+	aliasFunc         func(conf *nodenet.PodNetConf, ifName string) error
+	nodeName          string
+	clusterNetworks   *netfilter.ClusterNetworks
+	serviceCIDRSource netfilter.ServiceCIDRSource
 }
 
 var _ manager.LeaderElectionRunnable = &coildServer{}
@@ -516,10 +518,18 @@ func (s *coildServer) getHook(ctx context.Context, pod *corev1.Pod) (nodenet.Set
 	}
 
 	if len(gwlist) > 0 {
-		if s.clusterNetworkValidationFunc != nil {
-			if err := s.clusterNetworkValidationFunc(ctx); err != nil {
-				return nil, newInternalError(err, "egress validation failed for cluster networks")
+		var families []corev1.IPFamily
+		for _, gw := range gwlist {
+			family := corev1.IPv6Protocol
+			if gw.Gateway.To4() != nil {
+				family = corev1.IPv4Protocol
 			}
+			if !slices.Contains(families, family) {
+				families = append(families, family)
+			}
+		}
+		if err := netfilter.ValidateEgressClusterNetworks(ctx, s.serviceCIDRSource, s.clusterNetworks, families); err != nil {
+			return nil, newInternalError(err, "egress validation failed for cluster networks")
 		}
 
 		logger = logger.With(zap.String("pod_name", pod.Name), zap.String("pod_namespace", pod.Namespace))

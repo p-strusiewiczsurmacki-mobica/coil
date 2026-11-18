@@ -20,22 +20,22 @@ const (
 	ncFWMarkPrio    = 1000
 	ncLinkLocalPrio = 1800
 	ncNarrowPrio    = 1900
-	NcLocalPrioBase = 2000
-	NcWidePrio      = 2100
+	ncLocalPrioBase = 2000
+	ncWidePrio      = 2100
 )
 
 // MaxInClusterNetworks is the maximum number of in-cluster networks (per IP family)
 // that NatClient can install rules for. Each network gets its own rule priority
 // starting at ncLocalPrioBase, and they must not collide with ncWidePrio.
-const MaxInClusterNetworks = NcWidePrio - NcLocalPrioBase
+const MaxInClusterNetworks = ncWidePrio - ncLocalPrioBase
 
 // Table IDs
 const (
 	ncProtocolID    = 30
-	NcNarrowTableID = 117
-	NcWideTableID   = 118
+	ncNarrowTableID = 117
+	ncWideTableID   = 118
 
-	MainTableID      = 254
+	mainTableID      = 254
 	nonEgressTableID = 1000
 )
 
@@ -227,12 +227,12 @@ func (n *NatClient) moveRoutes(routes []netlink.Route, family int) error {
 			cn = n.inCluster.v6
 		}
 
-		expectedTable := NcWideTableID
+		expectedTable := ncWideTableID
 		for _, subnet := range cn {
 			if ipnetContains(subnet, r.Dst) {
 				// at least one cluster-network subnet contains the egress route subnet
 				// which means egress subnet should be 'narrow'
-				expectedTable = NcNarrowTableID
+				expectedTable = ncNarrowTableID
 				break
 			}
 		}
@@ -286,22 +286,22 @@ func (n *NatClient) SyncInClusterRules() error {
 
 func (n *NatClient) syncInClusterRules(family int, inCluster []*net.IPNet) error {
 	rules, err := netlink.RuleListFiltered(family, &netlink.Rule{
-		Table: MainTableID,
+		Table: mainTableID,
 	}, netlink.RT_FILTER_TABLE)
 	if err != nil {
 		return fmt.Errorf("failed to list rules: %w", err)
 	}
 
-	existingRules := make([]*netlink.Rule, NcWidePrio-NcLocalPrioBase)
+	existingRules := make([]*netlink.Rule, ncWidePrio-ncLocalPrioBase)
 	existingRulesMap := make(map[string]*netlink.Rule)
 
 	for i, r := range rules {
-		if r.Priority >= NcLocalPrioBase && r.Priority < NcWidePrio {
+		if r.Priority >= ncLocalPrioBase && r.Priority < ncWidePrio {
 			rDst := r.Dst
 			if rDst == nil {
 				rDst = getDefaultGlobalDst(family)
 			}
-			existingRules[r.Priority-NcLocalPrioBase] = &rules[i]
+			existingRules[r.Priority-ncLocalPrioBase] = &rules[i]
 			existingRulesMap[rDst.String()] = &rules[i]
 		}
 	}
@@ -334,7 +334,7 @@ func (n *NatClient) syncInClusterRules(family int, inCluster []*net.IPNet) error
 		if err := netlink.RuleDel(r); err != nil {
 			return fmt.Errorf("netlink: failed to delete rule: %q: %w", r.String(), err)
 		}
-		existingRules[r.Priority-NcLocalPrioBase] = nil
+		existingRules[r.Priority-ncLocalPrioBase] = nil
 	}
 
 	index := 0
@@ -348,7 +348,7 @@ func (n *NatClient) syncInClusterRules(family int, inCluster []*net.IPNet) error
 			return errors.New("no free rule priorities available")
 		}
 
-		r := newRule(family, MainTableID, NcLocalPrioBase+index)
+		r := newRule(family, mainTableID, ncLocalPrioBase+index)
 		r.Dst = ipn
 		if err := netlink.RuleAdd(r); err != nil && !errors.Is(err, syscall.EEXIST) {
 			return fmt.Errorf("netlink: failed to add rule %q: %w", r.String(), err)
@@ -368,18 +368,18 @@ func (n *NatClient) initRules(family int) error {
 		linkLocal = v6LinkLocal
 	}
 
-	linkLocalRule := newRule(family, MainTableID, ncLinkLocalPrio)
+	linkLocalRule := newRule(family, mainTableID, ncLinkLocalPrio)
 	linkLocalRule.Dst = linkLocal
 	if err := netlink.RuleAdd(linkLocalRule); err != nil && !errors.Is(err, syscall.EEXIST) {
 		return fmt.Errorf("netlink: failed to add link local rule: %w", err)
 	}
 
-	narrowRule := newRule(family, NcNarrowTableID, ncNarrowPrio)
+	narrowRule := newRule(family, ncNarrowTableID, ncNarrowPrio)
 	if err := netlink.RuleAdd(narrowRule); err != nil && !errors.Is(err, syscall.EEXIST) {
 		return fmt.Errorf("netlink: failed to add narrow rule: %w", err)
 	}
 
-	wideRule := newRule(family, NcWideTableID, NcWidePrio)
+	wideRule := newRule(family, ncWideTableID, ncWidePrio)
 	if err := netlink.RuleAdd(wideRule); err != nil && !errors.Is(err, syscall.EEXIST) {
 		return fmt.Errorf("netlink: failed to add wide rule: %w", err)
 	}
@@ -452,7 +452,7 @@ func (n *NatClient) clearRules(family int, gw *net.IPNet) error {
 
 	for _, r := range rules {
 		// skip non-NatClient rules
-		if r.Priority < ncLinkLocalPrio || r.Priority > NcWidePrio {
+		if r.Priority < ncLinkLocalPrio || r.Priority > ncWidePrio {
 			continue
 		}
 		if r.Dst == nil {
@@ -468,7 +468,7 @@ func (n *NatClient) clearRules(family int, gw *net.IPNet) error {
 }
 
 func (n *NatClient) clearRoutes(family int, gw *net.IPNet) error {
-	for _, t := range [2]int{NcNarrowTableID, NcWideTableID} {
+	for _, t := range [2]int{ncNarrowTableID, ncWideTableID} {
 		routes, err := netlink.RouteListFiltered(family, &netlink.Route{Table: t}, netlink.RT_FILTER_TABLE)
 		if err != nil {
 			return fmt.Errorf("netlink: route list failed: %w", err)
@@ -481,7 +481,7 @@ func (n *NatClient) clearRoutes(family int, gw *net.IPNet) error {
 			}
 
 			if err := netlink.RouteDel(&r); err != nil {
-				return fmt.Errorf("netlink: failed to delete a route in table %d: %+v, %w", NcNarrowTableID, r, err)
+				return fmt.Errorf("netlink: failed to delete a route in table %d: %+v, %w", ncNarrowTableID, r, err)
 			}
 		}
 	}
@@ -489,7 +489,7 @@ func (n *NatClient) clearRoutes(family int, gw *net.IPNet) error {
 }
 
 func isRuleInitialized(family int) (bool, error) {
-	rules, err := netlink.RuleListFiltered(family, &netlink.Rule{Table: NcNarrowTableID}, netlink.RT_FILTER_TABLE)
+	rules, err := netlink.RuleListFiltered(family, &netlink.Rule{Table: ncNarrowTableID}, netlink.RT_FILTER_TABLE)
 	if err != nil {
 		return false, fmt.Errorf("netlink: failed to list narrow rules: %w", err)
 	}
@@ -497,7 +497,7 @@ func isRuleInitialized(family int) (bool, error) {
 		return false, nil
 	}
 
-	rules, err = netlink.RuleListFiltered(family, &netlink.Rule{Table: NcWideTableID}, netlink.RT_FILTER_TABLE)
+	rules, err = netlink.RuleListFiltered(family, &netlink.Rule{Table: ncWideTableID}, netlink.RT_FILTER_TABLE)
 	if err != nil {
 		return false, fmt.Errorf("netlink: failed to list wide rules: %w", err)
 	}
@@ -508,7 +508,7 @@ func isRuleInitialized(family int) (bool, error) {
 }
 
 func areInClusterRulesInitialized(family int, inCluster []*net.IPNet) (bool, error) {
-	rules, err := netlink.RuleListFiltered(family, &netlink.Rule{Table: MainTableID}, netlink.RT_FILTER_TABLE)
+	rules, err := netlink.RuleListFiltered(family, &netlink.Rule{Table: mainTableID}, netlink.RT_FILTER_TABLE)
 	if err != nil {
 		return false, fmt.Errorf("netlink: failed to list main rules: %w", err)
 	}
@@ -572,23 +572,23 @@ func (n *NatClient) addRoute(link netlink.Link, ipn *net.IPNet) error {
 		}
 
 		if err := netlink.RouteAdd(&netlink.Route{
-			Table:     NcNarrowTableID,
+			Table:     ncNarrowTableID,
 			Dst:       ipn,
 			LinkIndex: link.Attrs().Index,
 			Protocol:  ncProtocolID,
 		}); err != nil {
-			return fmt.Errorf("netlink: failed to add route(table %d) to %s: %w", NcNarrowTableID, ipn.String(), err)
+			return fmt.Errorf("netlink: failed to add route(table %d) to %s: %w", ncNarrowTableID, ipn.String(), err)
 		}
 		return nil
 	}
 
 	if err := netlink.RouteAdd(&netlink.Route{
-		Table:     NcWideTableID,
+		Table:     ncWideTableID,
 		Dst:       ipn,
 		LinkIndex: link.Attrs().Index,
 		Protocol:  ncProtocolID,
 	}); err != nil {
-		return fmt.Errorf("netlink: failed to add route(table %d) to %s: %w", NcWideTableID, ipn.String(), err)
+		return fmt.Errorf("netlink: failed to add route(table %d) to %s: %w", ncWideTableID, ipn.String(), err)
 	}
 	return nil
 }
@@ -606,7 +606,7 @@ func (n *NatClient) deleteRoute(r *netlink.Route) error {
 
 func collectRoutesBySubnet(linkIndex int, family int) (map[string]netlink.Route, error) {
 	routes := make(map[string]netlink.Route)
-	for _, table := range []int{NcNarrowTableID, NcWideTableID} {
+	for _, table := range []int{ncNarrowTableID, ncWideTableID} {
 		res, err := collectRoutesFromTable(family, table, linkIndex)
 		if err != nil {
 			return nil, fmt.Errorf("failed to collect route %d %d %d: %w", family, table, linkIndex, err)

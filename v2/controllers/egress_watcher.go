@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"strings"
+	"time"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
@@ -23,15 +25,16 @@ import (
 
 type EgressWatcher struct {
 	client.Client
-	NodeName        string
-	PodNet          nodenet.PodNetwork
-	EgressPort      int
-	Backend         string
-	OriginatingOnly bool
-	ClusterNetworks *netfilter.ClusterNetworks
-
-	ClusterNetworksValidationFunc func(context.Context) error
+	NodeName          string
+	PodNet            nodenet.PodNetwork
+	EgressPort        int
+	Backend           string
+	OriginatingOnly   bool
+	ClusterNetworks   *netfilter.ClusterNetworks
+	ServiceCIDRSource netfilter.ServiceCIDRSource
 }
+
+const defaultRequeueTime = 5 * time.Second
 
 // +kubebuilder:rbac:groups=coil.cybozu.com,resources=egresses,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
@@ -95,15 +98,7 @@ func (r *EgressWatcher) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 			if v == eg.Name {
 				// Do reconcile
 				if err := r.reconcileEgressClient(ctx, eg, targetPod, &logger); err != nil {
-					if errors.Is(err, nodenet.ErrPodNetConfNotReady) {
-						// Transient race with concurrent Pod setup/teardown.
-						// Requeue with a small backoff instead of surfacing
-						// as a hard error.
-						logger.Info("transient netns lookup race; requeueing", "pod", fmt.Sprintf("%s/%s", targetPod.Namespace, targetPod.Name), "error", err.Error())
-						return ctrl.Result{}, err
-					}
-					logger.Error(err, "failed to reconcile Egress client pod")
-					return ctrl.Result{}, err
+					return handleClientError(&logger, targetPod, err)
 				}
 				continue
 			}
@@ -111,12 +106,7 @@ func (r *EgressWatcher) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 			for n := range strings.SplitSeq(v, ",") {
 				if n == eg.Name {
 					if err := r.reconcileEgressClient(ctx, eg, targetPod, &logger); err != nil {
-						if errors.Is(err, nodenet.ErrPodNetConfNotReady) {
-							logger.Info("transient netns lookup race; requeueing", "pod", fmt.Sprintf("%s/%s", targetPod.Namespace, targetPod.Name), "error", err.Error())
-							return ctrl.Result{}, err
-						}
-						logger.Error(err, "failed to reconcile Egress client pod")
-						return ctrl.Result{}, err
+						return handleClientError(&logger, targetPod, err)
 					}
 					continue
 				}
@@ -124,6 +114,22 @@ func (r *EgressWatcher) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		}
 	}
 	return ctrl.Result{}, nil
+}
+
+// handleClientError maps a reconcileEgressClient failure to a reconcile result.
+func handleClientError(logger *logr.Logger, pod *corev1.Pod, err error) (ctrl.Result, error) {
+	switch {
+	case errors.Is(err, nodenet.ErrPodNetConfNotReady):
+		// Transient race with concurrent Pod setup/teardown; retry with backoff.
+		logger.Info("transient netns lookup race; requeueing", "pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name), "error", err.Error())
+		return ctrl.Result{}, err
+	case errors.Is(err, netfilter.ErrServiceCIDRNotReady):
+		logger.Info("service CIDR discovery not ready; requeueing", "error", err.Error())
+		return ctrl.Result{RequeueAfter: defaultRequeueTime}, nil
+	default:
+		logger.Error(err, "failed to reconcile Egress client pod")
+		return ctrl.Result{}, err
+	}
 }
 
 func (r *EgressWatcher) reconcileEgressClient(ctx context.Context, eg *coilv2.Egress, pod *corev1.Pod, logger *logr.Logger) error {
@@ -147,10 +153,18 @@ func (r *EgressWatcher) reconcileEgressClient(ctx context.Context, eg *coilv2.Eg
 	}
 
 	var active, toDelete []gwNets
+	var families []corev1.IPFamily
 
 	for _, gw := range gws {
 		if len(gw.networks) > 0 {
 			active = append(active, gw)
+			family := corev1.IPv6Protocol
+			if gw.gateway.To4() != nil {
+				family = corev1.IPv4Protocol
+			}
+			if !slices.Contains(families, family) {
+				families = append(families, family)
+			}
 		} else {
 			toDelete = append(toDelete, gw)
 		}
@@ -172,10 +186,8 @@ func (r *EgressWatcher) reconcileEgressClient(ctx context.Context, eg *coilv2.Eg
 	}
 
 	// Outside PodNet.Update: no pod network lock or namespace entered.
-	if r.ClusterNetworksValidationFunc != nil {
-		if err := r.ClusterNetworksValidationFunc(ctx); err != nil {
-			return fmt.Errorf("cluster networks validation failed: %w", err)
-		}
+	if err := netfilter.ValidateEgressClusterNetworks(ctx, r.ServiceCIDRSource, r.ClusterNetworks, families); err != nil {
+		return fmt.Errorf("cluster networks validation failed: %w", err)
 	}
 
 	activeHooks := r.getHooks(active, logger)

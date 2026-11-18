@@ -11,6 +11,7 @@ import (
 	"github.com/go-logr/zapr"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	kubernetes "k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -86,9 +87,17 @@ func subMain() error {
 	}
 
 	ctx := context.Background()
-	var clusterNetworkValidationFunc func(context.Context) error
+	var serviceCIDRSource netfilter.ServiceCIDRSource
 	if cfg.EnableEgress {
-		clusterNetworkValidationFunc = netfilter.ValidateEgressClusterNetworks(mgr.GetClient(), clusterNetworks)
+		kubeClient, err := kubernetes.NewForConfig(mgr.GetConfig())
+		if err != nil {
+			return fmt.Errorf("create Kubernetes client for ServiceCIDR discovery: %w", err)
+		}
+		src := netfilter.NewServiceCIDRInformerSource(kubeClient)
+		if err := mgr.Add(src); err != nil {
+			return fmt.Errorf("add ServiceCIDR discovery source: %w", err)
+		}
+		serviceCIDRSource = src
 	}
 
 	if err := mgr.AddHealthzCheck("ping", healthz.Ping); err != nil {
@@ -153,21 +162,21 @@ func subMain() error {
 		return err
 	}
 	server := runners.NewCoildServer(l, mgr, nodeIPAM, podNet, runners.NewNATSetup(cfg.EgressPort, clusterNetworks),
-		cfg, grpcLogger, runners.ProcessLinkAlias, nodeName, clusterNetworkValidationFunc)
+		cfg, grpcLogger, runners.ProcessLinkAlias, nodeName, clusterNetworks, serviceCIDRSource)
 	if err := mgr.Add(server); err != nil {
 		return err
 	}
 
 	if cfg.EnableEgress {
 		egressWatcher := &controllers.EgressWatcher{
-			Client:                        mgr.GetClient(),
-			NodeName:                      nodeName,
-			PodNet:                        podNet,
-			EgressPort:                    cfg.EgressPort,
-			Backend:                       cfg.Backend,
-			OriginatingOnly:               cfg.OriginatingOnly,
-			ClusterNetworks:               clusterNetworks,
-			ClusterNetworksValidationFunc: clusterNetworkValidationFunc,
+			Client:            mgr.GetClient(),
+			NodeName:          nodeName,
+			PodNet:            podNet,
+			EgressPort:        cfg.EgressPort,
+			Backend:           cfg.Backend,
+			OriginatingOnly:   cfg.OriginatingOnly,
+			ClusterNetworks:   clusterNetworks,
+			ServiceCIDRSource: serviceCIDRSource,
 		}
 		if err := egressWatcher.SetupWithManager(mgr); err != nil {
 			return err

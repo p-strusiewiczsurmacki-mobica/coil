@@ -6,16 +6,31 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
-	"time"
 
-	networkingv1 "k8s.io/api/networking/v1"
-	"k8s.io/apimachinery/pkg/util/wait"
-	"sigs.k8s.io/controller-runtime/pkg/client"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/labels"
+	informersv1 "k8s.io/client-go/informers/networking/v1"
+	"k8s.io/client-go/kubernetes"
+	listersnetworkingv1 "k8s.io/client-go/listers/networking/v1"
+	"k8s.io/client-go/tools/cache"
 )
 
 // ValidateServiceCIDRs checks that the effective cluster networks cover every
-// Service CIDR. A nil ClusterNetworks receiver uses the configured defaults.
-func (cn *ClusterNetworks) ValidateServiceCIDRs(cidrs []string) error {
+// Service CIDR in the selected families. An empty family selection requires no
+// coverage. A nil ClusterNetworks receiver uses the configured defaults.
+func (cn *ClusterNetworks) ValidateServiceCIDRs(cidrs []string, families []corev1.IPFamily) error {
+	if len(families) == 0 {
+		return nil
+	}
+	var checkV4, checkV6 bool
+	for _, family := range families {
+		if family == corev1.IPv4Protocol {
+			checkV4 = true
+		}
+		if family == corev1.IPv6Protocol {
+			checkV6 = true
+		}
+	}
 	if len(cidrs) == 0 {
 		return errors.New("no Service CIDRs were discovered")
 	}
@@ -36,6 +51,9 @@ func (cn *ClusterNetworks) ValidateServiceCIDRs(cidrs []string) error {
 		if p.Addr().Is4In6() {
 			return fmt.Errorf("invalid Service CIDR %q: IPv4-mapped IPv6 prefixes are unsupported", original)
 		}
+		if (p.Addr().Is4() && !checkV4) || (p.Addr().Is6() && !checkV6) {
+			continue
+		}
 		p = p.Masked()
 		candidates := v6
 		if p.Addr().Is4() {
@@ -48,69 +66,27 @@ func (cn *ClusterNetworks) ValidateServiceCIDRs(cidrs []string) error {
 	return nil
 }
 
-const serviceCIDRDiscoveryTimeout = 10 * time.Second
-
-var (
-	serviceCIDRPollInterval = 2 * time.Second
-	serviceCIDRPollTimeout  = 60 * time.Second
-)
-
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=servicecidrs,verbs=list;watch
 
-// discoverServiceCIDRs reads every ServiceCIDR from the manager's cached client.
-// The first read starts a cluster-wide informer, which needs list and watch
-// permissions on ServiceCIDR.
-func discoverServiceCIDRs(ctx context.Context, reader client.Reader) ([]string, error) {
-	var list networkingv1.ServiceCIDRList
-	var lastErr error
-	err := wait.PollUntilContextTimeout(ctx, serviceCIDRPollInterval, serviceCIDRPollTimeout, true,
-		func(ctx context.Context) (bool, error) {
-			reqCtx, cancel := context.WithTimeout(ctx, serviceCIDRDiscoveryTimeout)
-			defer cancel()
-			lastErr = reader.List(reqCtx, &list)
-			return lastErr == nil, nil
-		})
-	if err != nil {
-		if lastErr != nil {
-			return nil, fmt.Errorf("list networking.k8s.io/v1 ServiceCIDRs: %w; last API error: %w", err, lastErr)
-		}
-		return nil, fmt.Errorf("list networking.k8s.io/v1 ServiceCIDRs: %w", err)
-	}
-
-	if ctx.Err() != nil {
-		return nil, fmt.Errorf("list networking.k8s.io/v1 ServiceCIDRs: context error: %w", ctx.Err())
-	}
-
-	if len(list.Items) == 0 {
-		return nil, errors.New("list networking.k8s.io/v1 ServiceCIDRs: no ServiceCIDR objects found")
-	}
-
-	cidrs := make([]string, 0, len(list.Items))
-	for _, item := range list.Items {
-		if len(item.Spec.CIDRs) == 0 {
-			return nil, fmt.Errorf("ServiceCIDR %q has no CIDRs", item.Name)
-		}
-		cidrs = append(cidrs, item.Spec.CIDRs...)
-	}
-	return cidrs, nil
-}
-
-// ValidateEgressClusterNetworks returns a function that checks the ServiceCIDRs
-// are covered by the configured cluster networks. Discovery runs each time the
-// returned function is called, and the callers invoke it before configuring
-// Egress NAT, not at startup.
-func ValidateEgressClusterNetworks(reader client.Reader, networks *ClusterNetworks) func(context.Context) error {
-	return func(ctx context.Context) error {
-		cidrs, err := discoverServiceCIDRs(ctx, reader)
-		if err != nil {
-			return fmt.Errorf("egress validation: discover ServiceCIDRs: %w", err)
-		}
-
-		if err := networks.ValidateServiceCIDRs(cidrs); err != nil {
-			return fmt.Errorf("egress validation: check ServiceCIDR coverage: %w", err)
-		}
+// ValidateEgressClusterNetworks checks that the ServiceCIDRs in the selected
+// families are covered by the configured cluster networks before configuring
+// Egress NAT. An empty selection needs no validation; nil networks uses defaults.
+func ValidateEgressClusterNetworks(ctx context.Context, source ServiceCIDRSource, networks *ClusterNetworks, families []corev1.IPFamily) error {
+	if len(families) == 0 {
 		return nil
 	}
+	if source == nil {
+		return errors.New("egress validation: ServiceCIDR source is not configured")
+	}
+	cidrs, err := source.Discover(ctx)
+	if err != nil {
+		return fmt.Errorf("egress validation: discover ServiceCIDRs: %w", err)
+	}
+
+	if err := networks.ValidateServiceCIDRs(cidrs, families); err != nil {
+		return fmt.Errorf("egress validation: check ServiceCIDR coverage: %w", err)
+	}
+	return nil
 }
 
 func prefixesFromIPNets(nets []*net.IPNet) ([]netip.Prefix, error) {
@@ -191,4 +167,84 @@ func splitPrefix(p netip.Prefix) (netip.Prefix, netip.Prefix) {
 		addr = netip.AddrFrom16(b)
 	}
 	return left, netip.PrefixFrom(addr, childBits)
+}
+
+var (
+	// ErrServiceCIDRNotReady is returned by Discover before the ServiceCIDR
+	// informer has completed its initial synchronization.
+	ErrServiceCIDRNotReady = errors.New("ServiceCIDR informer has not synchronized (check that the networking.k8s.io/v1 ServiceCIDR API is served and RBAC allows list/watch on servicecidrs; see coild logs)")
+	// ErrNoServiceCIDRs is returned by Discover if no service CIDRs were found in the cluster
+	ErrNoServiceCIDRs = errors.New("no ServiceCIDR objects are available")
+)
+
+// ServiceCIDRSource provides the Service CIDRs used for egress validation.
+// Discover returns promptly with an error before the source's initial data
+// is synchronized; it must not wait for synchronization. Once synchronized,
+// it returns all CIDRs from all ServiceCIDR objects and reports errors for an
+// empty ServiceCIDR set, an object without CIDRs, or a discovery failure.
+// Discover should honor context cancellation.
+type ServiceCIDRSource interface {
+	Discover(ctx context.Context) ([]string, error)
+}
+
+// ServiceCIDRInformerSource discovers Service CIDRs using its own client-go
+// informer. It is deliberately independent of the controller-runtime manager's
+// cache, so it can read ServiceCIDRs without API resource discovery.
+type ServiceCIDRInformerSource struct {
+	informer cache.SharedIndexInformer
+	lister   listersnetworkingv1.ServiceCIDRLister
+}
+
+// NewServiceCIDRInformerSource creates an independent typed ServiceCIDR
+// informer and its lister. The informer is started by the manager through
+// Start; callers must not start it separately. Client-go's default error
+// handler logs list/watch failures.
+func NewServiceCIDRInformerSource(client kubernetes.Interface) *ServiceCIDRInformerSource {
+	informer := informersv1.NewServiceCIDRInformer(client, 0, cache.Indexers{})
+	return &ServiceCIDRInformerSource{
+		informer: informer,
+		lister:   listersnetworkingv1.NewServiceCIDRLister(informer.GetIndexer()),
+	}
+}
+
+// Start runs the informer until the manager cancels ctx. It intentionally does
+// not wait for initial synchronization: the manager can become ready while
+// Discover reports that the informer is not ready yet.
+func (s *ServiceCIDRInformerSource) Start(ctx context.Context) error {
+	s.informer.RunWithContext(ctx)
+	return nil
+}
+
+// NeedLeaderElection allows this read-only informer to run on every replica.
+func (s *ServiceCIDRInformerSource) NeedLeaderElection() bool { return false }
+
+// Discover returns a snapshot of all ServiceCIDR CIDRs currently in the
+// informer cache. It returns ErrServiceCIDRNotReady immediately before initial
+// synchronization and reports an error if the snapshot is invalid.
+func (s *ServiceCIDRInformerSource) Discover(ctx context.Context) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if !s.informer.HasSynced() {
+		return nil, ErrServiceCIDRNotReady
+	}
+
+	objects, err := s.lister.List(labels.Everything())
+	if err != nil {
+		return nil, fmt.Errorf("list ServiceCIDRs from informer cache: %w", err)
+	}
+
+	if len(objects) == 0 {
+		return nil, ErrNoServiceCIDRs
+	}
+
+	var cidrs []string
+	for _, object := range objects {
+		if len(object.Spec.CIDRs) == 0 {
+			return nil, fmt.Errorf("ServiceCIDR %q has no CIDRs", object.Name)
+		}
+		cidrs = append(cidrs, object.Spec.CIDRs...)
+	}
+
+	return cidrs, nil
 }
