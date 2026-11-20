@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"strings"
+	"time"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
@@ -23,12 +25,16 @@ import (
 
 type EgressWatcher struct {
 	client.Client
-	NodeName        string
-	PodNet          nodenet.PodNetwork
-	EgressPort      int
-	Backend         string
-	OriginatingOnly bool
+	NodeName          string
+	PodNet            nodenet.PodNetwork
+	EgressPort        int
+	Backend           string
+	OriginatingOnly   bool
+	ClusterNetworks   *netfilter.ClusterNetworks
+	ServiceCIDRSource netfilter.ServiceCIDRSource
 }
+
+const defaultRequeueTime = 5 * time.Second
 
 // +kubebuilder:rbac:groups=coil.cybozu.com,resources=egresses,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
@@ -92,15 +98,7 @@ func (r *EgressWatcher) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 			if v == eg.Name {
 				// Do reconcile
 				if err := r.reconcileEgressClient(ctx, eg, targetPod, &logger); err != nil {
-					if errors.Is(err, nodenet.ErrPodNetConfNotReady) {
-						// Transient race with concurrent Pod setup/teardown.
-						// Requeue with a small backoff instead of surfacing
-						// as a hard error.
-						logger.Info("transient netns lookup race; requeueing", "pod", fmt.Sprintf("%s/%s", targetPod.Namespace, targetPod.Name), "error", err.Error())
-						return ctrl.Result{}, err
-					}
-					logger.Error(err, "failed to reconcile Egress client pod")
-					return ctrl.Result{}, err
+					return handleClientError(&logger, targetPod, err)
 				}
 				continue
 			}
@@ -108,12 +106,7 @@ func (r *EgressWatcher) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 			for n := range strings.SplitSeq(v, ",") {
 				if n == eg.Name {
 					if err := r.reconcileEgressClient(ctx, eg, targetPod, &logger); err != nil {
-						if errors.Is(err, nodenet.ErrPodNetConfNotReady) {
-							logger.Info("transient netns lookup race; requeueing", "pod", fmt.Sprintf("%s/%s", targetPod.Namespace, targetPod.Name), "error", err.Error())
-							return ctrl.Result{}, err
-						}
-						logger.Error(err, "failed to reconcile Egress client pod")
-						return ctrl.Result{}, err
+						return handleClientError(&logger, targetPod, err)
 					}
 					continue
 				}
@@ -123,10 +116,26 @@ func (r *EgressWatcher) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	return ctrl.Result{}, nil
 }
 
+// handleClientError maps a reconcileEgressClient failure to a reconcile result.
+func handleClientError(logger *logr.Logger, pod *corev1.Pod, err error) (ctrl.Result, error) {
+	switch {
+	case errors.Is(err, nodenet.ErrPodNetConfNotReady):
+		// Transient race with concurrent Pod setup/teardown; retry with backoff.
+		logger.Info("transient netns lookup race; requeueing", "pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name), "error", err.Error())
+		return ctrl.Result{}, err
+	case errors.Is(err, netfilter.ErrServiceCIDRNotReady):
+		logger.Info("service CIDR discovery not ready; requeueing", "error", err.Error())
+		return ctrl.Result{RequeueAfter: defaultRequeueTime}, nil
+	default:
+		logger.Error(err, "failed to reconcile Egress client pod")
+		return ctrl.Result{}, err
+	}
+}
+
 func (r *EgressWatcher) reconcileEgressClient(ctx context.Context, eg *coilv2.Egress, pod *corev1.Pod, logger *logr.Logger) error {
 	logger.Info("Reconciling", "pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name))
 
-	hooks, err := r.getHooks(ctx, eg, logger)
+	gws, err := r.getGwnets(ctx, eg)
 	if err != nil {
 		return fmt.Errorf("failed to setup NAT hook: %w", err)
 	}
@@ -143,9 +152,51 @@ func (r *EgressWatcher) reconcileEgressClient(ctx context.Context, eg *coilv2.Eg
 		}
 	}
 
-	for _, hook := range hooks {
-		if err := r.PodNet.Update(ipv4, ipv6, hook, pod); err != nil {
-			return fmt.Errorf("failed to update NAT configuration: %w", err)
+	var active, toDelete []gwNets
+	var families []corev1.IPFamily
+
+	for _, gw := range gws {
+		if len(gw.networks) > 0 {
+			active = append(active, gw)
+			family := corev1.IPv6Protocol
+			if gw.gateway.To4() != nil {
+				family = corev1.IPv4Protocol
+			}
+			if !slices.Contains(families, family) {
+				families = append(families, family)
+			}
+		} else {
+			toDelete = append(toDelete, gw)
+		}
+	}
+
+	deletionHooks := r.getHooks(toDelete, logger)
+
+	for _, hook := range deletionHooks {
+		if err := r.PodNet.Update(
+			ipv4, ipv6, hook, pod,
+		); err != nil {
+			logger.Error(err, "deletion hook failed", "pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name))
+			return err
+		}
+	}
+
+	if len(active) == 0 {
+		return nil
+	}
+
+	// Outside PodNet.Update: no pod network lock or namespace entered.
+	if err := netfilter.ValidateEgressClusterNetworks(ctx, r.ServiceCIDRSource, r.ClusterNetworks, families); err != nil {
+		return fmt.Errorf("cluster networks validation failed: %w", err)
+	}
+
+	activeHooks := r.getHooks(active, logger)
+
+	for _, hook := range activeHooks {
+		if err := r.PodNet.Update(
+			ipv4, ipv6, hook, pod,
+		); err != nil {
+			return err
 		}
 	}
 
@@ -159,15 +210,10 @@ type gwNets struct {
 	originatingOnly bool
 }
 
-func (r *EgressWatcher) getHooks(ctx context.Context, eg *coilv2.Egress, logger *logr.Logger) ([]nodenet.SetupHook, error) {
-	var gw gwNets
-	svc := &corev1.Service{}
-
-	if err := r.Get(ctx, client.ObjectKey{Namespace: eg.Namespace, Name: eg.Name}, svc); err != nil {
-		return nil, err
-	}
-
-	hooks := []nodenet.SetupHook{}
+// gatewayNetworks returns one gwNets per ClusterIP of svc. Each gwNets only
+// contains the Egress destinations whose IP family matches the ClusterIP.
+func (r *EgressWatcher) gatewayNetworks(eg *coilv2.Egress, svc *corev1.Service) ([]gwNets, error) {
+	var gws []gwNets
 	for _, clusterIP := range svc.Spec.ClusterIPs {
 		var subnets []*net.IPNet
 		svcIP := net.ParseIP(clusterIP)
@@ -185,13 +231,33 @@ func (r *EgressWatcher) getHooks(ctx context.Context, eg *coilv2.Egress, logger 
 			}
 		}
 
-		if len(subnets) > 0 {
-			gw = gwNets{gateway: svcIP, networks: subnets, sportAuto: eg.Spec.FouSourcePortAuto, originatingOnly: r.OriginatingOnly}
-			hooks = append(hooks, r.hook(gw, logger))
-		}
+		gws = append(gws, gwNets{gateway: svcIP, networks: subnets, sportAuto: eg.Spec.FouSourcePortAuto, originatingOnly: r.OriginatingOnly})
+	}
+	return gws, nil
+}
+
+func (r *EgressWatcher) getHooks(gws []gwNets, logger *logr.Logger) []nodenet.SetupHook {
+	hooks := []nodenet.SetupHook{}
+	for _, gw := range gws {
+		hooks = append(hooks, r.hook(gw, logger))
 	}
 
-	return hooks, nil
+	return hooks
+}
+
+func (r *EgressWatcher) getGwnets(ctx context.Context, eg *coilv2.Egress) ([]gwNets, error) {
+	svc := &corev1.Service{}
+
+	if err := r.Get(ctx, client.ObjectKey{Namespace: eg.Namespace, Name: eg.Name}, svc); err != nil {
+		return nil, err
+	}
+
+	gws, err := r.gatewayNetworks(eg, svc)
+	if err != nil {
+		return nil, err
+	}
+
+	return gws, nil
 }
 
 func (r *EgressWatcher) hook(gwn gwNets, log *logr.Logger) func(ipv4, ipv6 net.IP) error {
@@ -201,10 +267,16 @@ func (r *EgressWatcher) hook(gwn gwNets, log *logr.Logger) func(ipv4, ipv6 net.I
 		ft := fou.NewClientFoUTunnel(r.EgressPort, ipv4, ipv6, func(message string) {
 			log.Info(message)
 		})
+
+		if len(gwn.networks) == 0 {
+			return ft.DelPeer(gwn.gateway)
+		}
+
 		if !ft.IsInitialized() {
 			return errors.New("fouTunnel hasn't been initialized")
 		}
-		cl := netfilter.NewNatClient(ipv4, ipv6, nil, r.Backend, func(message string) {
+
+		cl := netfilter.NewNatClient(ipv4, ipv6, r.ClusterNetworks, r.Backend, func(message string) {
 			log.Info(message)
 		})
 		initialized, err := cl.IsInitialized()
@@ -214,6 +286,15 @@ func (r *EgressWatcher) hook(gwn gwNets, log *logr.Logger) func(ipv4, ipv6 net.I
 
 		if err := cl.EnsureFlowBasedDevRules(); err != nil {
 			return err
+		}
+
+		if err := cl.SyncInClusterRules(); err != nil {
+			return fmt.Errorf("natClient was unable to sync in-cluster rules: %w", err)
+		}
+
+		inClusterInitialized, err := cl.IsInClusterInitialized()
+		if !inClusterInitialized {
+			return fmt.Errorf("natClient's in-cluster rules haven't been initialized: %w", err)
 		}
 
 		link, err := ft.AddPeer(gwn.gateway, gwn.sportAuto)
