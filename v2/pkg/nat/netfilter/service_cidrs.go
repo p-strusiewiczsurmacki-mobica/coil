@@ -89,6 +89,29 @@ func ValidateEgressClusterNetworks(ctx context.Context, source ServiceCIDRSource
 	return nil
 }
 
+// GatewayFamilies returns the unique IP families of gateways for which the pod
+// has an address, IPv4 first and then IPv6. A nil podIPv4 or podIPv6 means the
+// pod has no address of that family, so gateways of that family are ignored.
+// An empty result means no cluster network validation is needed.
+func GatewayFamilies(gateways []net.IP, podIPv4, podIPv6 net.IP) []corev1.IPFamily {
+	var hasV4, hasV6 bool
+	for _, gw := range gateways {
+		if gw.To4() != nil {
+			hasV4 = true
+		} else if len(gw) == net.IPv6len {
+			hasV6 = true
+		}
+	}
+	var families []corev1.IPFamily
+	if hasV4 && podIPv4 != nil {
+		families = append(families, corev1.IPv4Protocol)
+	}
+	if hasV6 && podIPv6 != nil {
+		families = append(families, corev1.IPv6Protocol)
+	}
+	return families
+}
+
 func prefixesFromIPNets(nets []*net.IPNet) ([]netip.Prefix, error) {
 	out := make([]netip.Prefix, 0, len(nets))
 	for _, n := range nets {

@@ -715,8 +715,12 @@ func TestGetHookValidatesOnlyServiceCIDRsForActiveFamily(t *testing.T) {
 		clusterIPs      []string
 		serviceCIDRs    []string
 		clusterNetworks []string
-		wantErrCIDR     string
-		wantDiscovery   bool
+		// podIPs are the client pod addresses; nil means a dual-stack pod.
+		podIPs        []string
+		wantErrCIDR   string
+		wantDiscovery bool
+		// wantHook expects a NAT hook even when no discovery happens.
+		wantHook bool
 	}{
 		{
 			name:          "IPv4 egress ignores uncovered IPv6 ServiceCIDR",
@@ -753,6 +757,7 @@ func TestGetHookValidatesOnlyServiceCIDRsForActiveFamily(t *testing.T) {
 			destinations:  []string{"0.0.0.0/0", "::/0"},
 			clusterIPs:    []string{"10.96.0.10", "fc00:100::10"},
 			serviceCIDRs:  []string{"10.96.0.0/16", "fc00:100::/64"},
+			podIPs:        []string{"10.1.2.3", "fc00:200::3"},
 			wantDiscovery: true,
 		},
 		{
@@ -760,6 +765,7 @@ func TestGetHookValidatesOnlyServiceCIDRsForActiveFamily(t *testing.T) {
 			destinations:  []string{"0.0.0.0/0", "::/0"},
 			clusterIPs:    []string{"10.96.0.10", "2001:db8:100::10"},
 			serviceCIDRs:  []string{"10.96.0.0/16", "2001:db8:100::/112"},
+			podIPs:        []string{"10.1.2.3", "fc00:200::3"},
 			wantDiscovery: true,
 			wantErrCIDR:   "2001:db8:100::/112",
 		},
@@ -768,6 +774,7 @@ func TestGetHookValidatesOnlyServiceCIDRsForActiveFamily(t *testing.T) {
 			destinations:  []string{"0.0.0.0/0", "::/0"},
 			clusterIPs:    []string{"203.0.113.10", "fc00:100::10"},
 			serviceCIDRs:  []string{"203.0.113.0/24", "fc00:100::/64"},
+			podIPs:        []string{"10.1.2.3", "fc00:200::3"},
 			wantDiscovery: true,
 			wantErrCIDR:   "203.0.113.0/24",
 		},
@@ -814,6 +821,56 @@ func TestGetHookValidatesOnlyServiceCIDRsForActiveFamily(t *testing.T) {
 			destinations: []string{"::/0"},
 			clusterIPs:   []string{"10.96.0.10"},
 		},
+		{
+			name:          "IPv4-only pod on dual stack egress ignores uncovered IPv6 ServiceCIDR",
+			destinations:  []string{"0.0.0.0/0", "::/0"},
+			clusterIPs:    []string{"10.96.0.10", "2001:db8:100::10"},
+			serviceCIDRs:  []string{"10.96.0.0/16", "2001:db8:100::/112"},
+			podIPs:        []string{"10.1.2.3"},
+			wantDiscovery: true,
+		},
+		{
+			name:          "IPv4-only pod on dual stack egress rejects uncovered IPv4 ServiceCIDR",
+			destinations:  []string{"0.0.0.0/0", "::/0"},
+			clusterIPs:    []string{"203.0.113.10", "fc00:100::10"},
+			serviceCIDRs:  []string{"203.0.113.0/24", "fc00:100::/64"},
+			podIPs:        []string{"10.1.2.3"},
+			wantDiscovery: true,
+			wantErrCIDR:   "203.0.113.0/24",
+		},
+		{
+			name:          "IPv6-only pod on dual stack egress ignores uncovered IPv4 ServiceCIDR",
+			destinations:  []string{"0.0.0.0/0", "::/0"},
+			clusterIPs:    []string{"203.0.113.10", "fc00:100::10"},
+			serviceCIDRs:  []string{"203.0.113.0/24", "fc00:100::/64"},
+			podIPs:        []string{"fc00:200::3"},
+			wantDiscovery: true,
+		},
+		{
+			name:          "IPv6-only pod on dual stack egress rejects uncovered IPv6 ServiceCIDR",
+			destinations:  []string{"0.0.0.0/0", "::/0"},
+			clusterIPs:    []string{"10.96.0.10", "2001:db8:100::10"},
+			serviceCIDRs:  []string{"10.96.0.0/16", "2001:db8:100::/112"},
+			podIPs:        []string{"fc00:200::3"},
+			wantDiscovery: true,
+			wantErrCIDR:   "2001:db8:100::/112",
+		},
+		{
+			name:         "IPv6-only pod on IPv4 egress skips discovery",
+			destinations: []string{"0.0.0.0/0"},
+			clusterIPs:   []string{"203.0.113.10"},
+			serviceCIDRs: []string{"203.0.113.0/24"},
+			podIPs:       []string{"fc00:200::3"},
+			wantHook:     true,
+		},
+		{
+			name:         "pod without addresses skips discovery",
+			destinations: []string{"0.0.0.0/0", "::/0"},
+			clusterIPs:   []string{"203.0.113.10", "2001:db8:100::10"},
+			serviceCIDRs: []string{"203.0.113.0/24", "2001:db8:100::/112"},
+			podIPs:       []string{},
+			wantHook:     true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -826,6 +883,20 @@ func TestGetHookValidatesOnlyServiceCIDRsForActiveFamily(t *testing.T) {
 			} {
 				if err := add(scheme); err != nil {
 					t.Fatalf("add API scheme: %v", err)
+				}
+			}
+
+			podIPs := tt.podIPs
+			if podIPs == nil {
+				podIPs = []string{"10.0.0.1", "2001:db8::1"}
+			}
+			var ipv4, ipv6 net.IP
+			for _, s := range podIPs {
+				ip := net.ParseIP(s)
+				if ip.To4() != nil {
+					ipv4 = ip.To4()
+				} else {
+					ipv6 = ip
 				}
 			}
 
@@ -878,7 +949,7 @@ func TestGetHookValidatesOnlyServiceCIDRsForActiveFamily(t *testing.T) {
 			pod.Name = "client"
 			pod.Annotations = map[string]string{constants.AnnEgressPrefix + "default": "egress"}
 
-			_, err := server.getHook(context.Background(), pod)
+			_, err := server.getHook(context.Background(), pod, ipv4, ipv6)
 			wantLists := 0
 			if tt.wantDiscovery {
 				wantLists = 1
@@ -891,8 +962,8 @@ func TestGetHookValidatesOnlyServiceCIDRsForActiveFamily(t *testing.T) {
 				t.Error("NAT hook was configured after validation failed")
 			}
 			if tt.wantErrCIDR == "" {
-				if (len(natSetup.gwnets) > 0) != tt.wantDiscovery {
-					t.Errorf("NAT gateways = %v, want active hook: %v", natSetup.gwnets, tt.wantDiscovery)
+				if wantHook := tt.wantDiscovery || tt.wantHook; (len(natSetup.gwnets) > 0) != wantHook {
+					t.Errorf("NAT gateways = %v, want active hook: %v", natSetup.gwnets, wantHook)
 				}
 				if err != nil {
 					t.Fatalf("getHook() returned unexpected error: %v", err)
@@ -1030,7 +1101,9 @@ func TestCNIStartsWhileServiceCIDRListIsForbidden(t *testing.T) {
 		Args:        map[string]string{constants.PodNameKey: "client", constants.PodNamespaceKey: "default"},
 		ContainerId: "sandbox",
 		Ifname:      "eth0",
-		Interfaces:  map[string]bool{"eth0": false},
+		// Egress validation only covers families the pod has an address for.
+		Ips:        []string{"10.1.2.3"},
+		Interfaces: map[string]bool{"eth0": false},
 	}
 	if _, err := cni.Add(dialCtx, args); err != nil {
 		t.Fatalf("CNI Add without egress annotation should succeed while discovery is unavailable: %v", err)

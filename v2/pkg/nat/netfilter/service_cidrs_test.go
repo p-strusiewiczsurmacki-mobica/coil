@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"reflect"
 	"sort"
 	"strings"
@@ -629,6 +630,43 @@ func TestServiceCIDRCoverageSelectedFamilies(t *testing.T) {
 			}
 			if calls != wantCalls {
 				t.Errorf("List calls = %d, want %d", calls, wantCalls)
+			}
+		})
+	}
+}
+
+func TestGatewayFamilies(t *testing.T) {
+	v4 := net.ParseIP("10.0.0.1")
+	v4b := net.ParseIP("10.0.0.2")
+	v6 := net.ParseIP("fd00::1")
+	v6b := net.ParseIP("fd00::2")
+	pod4 := net.ParseIP("10.1.0.5")
+	pod6 := net.ParseIP("fd01::5")
+	both := []corev1.IPFamily{corev1.IPv4Protocol, corev1.IPv6Protocol}
+	only4 := []corev1.IPFamily{corev1.IPv4Protocol}
+	only6 := []corev1.IPFamily{corev1.IPv6Protocol}
+
+	tests := []struct {
+		name     string
+		gateways []net.IP
+		podV4    net.IP
+		podV6    net.IP
+		want     []corev1.IPFamily
+	}{
+		{"dual gateways dual pod", []net.IP{v6, v4, v4b, v6b}, pod4, pod6, both},
+		{"dual gateways ipv4 pod", []net.IP{v4, v6}, pod4, nil, only4},
+		{"dual gateways ipv6 pod", []net.IP{v6, v4}, nil, pod6, only6},
+		{"ipv4 gateways ipv6 pod", []net.IP{v4, v4b}, nil, pod6, nil},
+		{"ipv6 gateways ipv4 pod", []net.IP{v6, v6b}, pod4, nil, nil},
+		{"dual gateways no pod addresses", []net.IP{v4, v6}, nil, nil, nil},
+		{"nil gateways", nil, pod4, pod6, nil},
+		{"empty gateways", []net.IP{}, pod4, pod6, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := GatewayFamilies(tt.gateways, tt.podV4, tt.podV6)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("GatewayFamilies() = %v, want %v", got, tt.want)
 			}
 		})
 	}
