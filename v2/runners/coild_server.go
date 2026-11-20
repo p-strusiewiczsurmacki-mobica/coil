@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -311,7 +310,7 @@ func (s *coildServer) Add(ctx context.Context, args *cnirpc.CNIArgs) (*cnirpc.Ad
 			}
 		}
 
-		hook, err := s.getHook(ctx, pod)
+		hook, err := s.getHook(ctx, pod, ipv4, ipv6)
 		if err != nil {
 			logger.Sugar().Errorw("failed to setup NAT hook", "error", err)
 			return nil, newInternalError(err, "failed to setup NAT hook")
@@ -377,7 +376,7 @@ func getPodIPs(ips []string) (net.IP, net.IP) {
 		if addr != nil {
 			if ipv4 == nil && addr.To4() != nil {
 				ipv4 = addr
-			} else if ipv6 == nil {
+			} else if ipv6 == nil && addr.To4() == nil {
 				ipv6 = addr
 			}
 		}
@@ -451,7 +450,7 @@ func (s *coildServer) getPodFromArgs(ctx context.Context, args *cnirpc.CNIArgs, 
 	return pod, nil
 }
 
-func (s *coildServer) getHook(ctx context.Context, pod *corev1.Pod) (nodenet.SetupHook, error) {
+func (s *coildServer) getHook(ctx context.Context, pod *corev1.Pod, ipv4, ipv6 net.IP) (nodenet.SetupHook, error) {
 	logger := withCtxFields(ctx, s.logger)
 
 	if pod.Spec.HostNetwork {
@@ -518,18 +517,14 @@ func (s *coildServer) getHook(ctx context.Context, pod *corev1.Pod) (nodenet.Set
 	}
 
 	if len(gwlist) > 0 {
-		var families []corev1.IPFamily
+		gateways := make([]net.IP, 0, len(gwlist))
 		for _, gw := range gwlist {
-			family := corev1.IPv6Protocol
-			if gw.Gateway.To4() != nil {
-				family = corev1.IPv4Protocol
-			}
-			if !slices.Contains(families, family) {
-				families = append(families, family)
-			}
+			gateways = append(gateways, gw.Gateway)
 		}
-		if err := netfilter.ValidateEgressClusterNetworks(ctx, s.serviceCIDRSource, s.clusterNetworks, families); err != nil {
-			return nil, newInternalError(err, "egress validation failed for cluster networks")
+		if families := netfilter.GatewayFamilies(gateways, ipv4, ipv6); len(families) > 0 {
+			if err := netfilter.ValidateEgressClusterNetworks(ctx, s.serviceCIDRSource, s.clusterNetworks, families); err != nil {
+				return nil, newInternalError(err, "egress validation failed for cluster networks")
+			}
 		}
 
 		logger = logger.With(zap.String("pod_name", pod.Name), zap.String("pod_namespace", pod.Namespace))

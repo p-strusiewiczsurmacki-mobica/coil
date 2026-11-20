@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"slices"
 	"strings"
 	"time"
 
@@ -153,18 +152,12 @@ func (r *EgressWatcher) reconcileEgressClient(ctx context.Context, eg *coilv2.Eg
 	}
 
 	var active, toDelete []gwNets
-	var families []corev1.IPFamily
+	var activeGateways []net.IP
 
 	for _, gw := range gws {
 		if len(gw.networks) > 0 {
 			active = append(active, gw)
-			family := corev1.IPv6Protocol
-			if gw.gateway.To4() != nil {
-				family = corev1.IPv4Protocol
-			}
-			if !slices.Contains(families, family) {
-				families = append(families, family)
-			}
+			activeGateways = append(activeGateways, gw.gateway)
 		} else {
 			toDelete = append(toDelete, gw)
 		}
@@ -185,9 +178,12 @@ func (r *EgressWatcher) reconcileEgressClient(ctx context.Context, eg *coilv2.Eg
 		return nil
 	}
 
+	// Only validate families the pod actually has an address for.
 	// Outside PodNet.Update: no pod network lock or namespace entered.
-	if err := netfilter.ValidateEgressClusterNetworks(ctx, r.ServiceCIDRSource, r.ClusterNetworks, families); err != nil {
-		return fmt.Errorf("cluster networks validation failed: %w", err)
+	if families := netfilter.GatewayFamilies(activeGateways, ipv4, ipv6); len(families) > 0 {
+		if err := netfilter.ValidateEgressClusterNetworks(ctx, r.ServiceCIDRSource, r.ClusterNetworks, families); err != nil {
+			return fmt.Errorf("cluster networks validation failed: %w", err)
+		}
 	}
 
 	activeHooks := r.getHooks(active, logger)

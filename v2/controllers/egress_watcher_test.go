@@ -335,6 +335,9 @@ func TestReconcileEgressClientValidatesOnlyServiceCIDRsForActiveFamily(t *testin
 		clusterIPs      []string
 		serviceCIDRs    []string
 		clusterNetworks []string
+		// podIPs are the client pod addresses; nil means a single address
+		// of the family selected by destinations.
+		podIPs          []string
 		wantErrCIDR     string
 		wantDiscovery   bool
 		deletionUpdates int
@@ -374,6 +377,7 @@ func TestReconcileEgressClientValidatesOnlyServiceCIDRsForActiveFamily(t *testin
 			destinations:  []string{"0.0.0.0/0", "::/0"},
 			clusterIPs:    []string{"10.96.0.10", "fc00:100::10"},
 			serviceCIDRs:  []string{"10.96.0.0/16", "fc00:100::/64"},
+			podIPs:        []string{"10.1.2.3", "fc00:200::3"},
 			wantDiscovery: true,
 		},
 		{
@@ -381,6 +385,7 @@ func TestReconcileEgressClientValidatesOnlyServiceCIDRsForActiveFamily(t *testin
 			destinations:  []string{"0.0.0.0/0", "::/0"},
 			clusterIPs:    []string{"10.96.0.10", "2001:db8:100::10"},
 			serviceCIDRs:  []string{"10.96.0.0/16", "2001:db8:100::/112"},
+			podIPs:        []string{"10.1.2.3", "fc00:200::3"},
 			wantDiscovery: true,
 			wantErrCIDR:   "2001:db8:100::/112",
 		},
@@ -389,6 +394,7 @@ func TestReconcileEgressClientValidatesOnlyServiceCIDRsForActiveFamily(t *testin
 			destinations:  []string{"0.0.0.0/0", "::/0"},
 			clusterIPs:    []string{"203.0.113.10", "fc00:100::10"},
 			serviceCIDRs:  []string{"203.0.113.0/24", "fc00:100::/64"},
+			podIPs:        []string{"10.1.2.3", "fc00:200::3"},
 			wantDiscovery: true,
 			wantErrCIDR:   "203.0.113.0/24",
 		},
@@ -445,6 +451,47 @@ func TestReconcileEgressClientValidatesOnlyServiceCIDRsForActiveFamily(t *testin
 			wantErrCIDR:     "203.0.113.0/24",
 			deletionUpdates: 1,
 		},
+		{
+			name:          "IPv4-only pod on dual stack egress ignores uncovered IPv6 ServiceCIDR",
+			destinations:  []string{"0.0.0.0/0", "::/0"},
+			clusterIPs:    []string{"10.96.0.10", "2001:db8:100::10"},
+			serviceCIDRs:  []string{"10.96.0.0/16", "2001:db8:100::/112"},
+			podIPs:        []string{"10.1.2.3"},
+			wantDiscovery: true,
+		},
+		{
+			name:          "IPv4-only pod on dual stack egress rejects uncovered IPv4 ServiceCIDR",
+			destinations:  []string{"0.0.0.0/0", "::/0"},
+			clusterIPs:    []string{"203.0.113.10", "fc00:100::10"},
+			serviceCIDRs:  []string{"203.0.113.0/24", "fc00:100::/64"},
+			podIPs:        []string{"10.1.2.3"},
+			wantDiscovery: true,
+			wantErrCIDR:   "203.0.113.0/24",
+		},
+		{
+			name:          "IPv6-only pod on dual stack egress ignores uncovered IPv4 ServiceCIDR",
+			destinations:  []string{"0.0.0.0/0", "::/0"},
+			clusterIPs:    []string{"203.0.113.10", "fc00:100::10"},
+			serviceCIDRs:  []string{"203.0.113.0/24", "fc00:100::/64"},
+			podIPs:        []string{"fc00:200::3"},
+			wantDiscovery: true,
+		},
+		{
+			name:          "IPv6-only pod on dual stack egress rejects uncovered IPv6 ServiceCIDR",
+			destinations:  []string{"0.0.0.0/0", "::/0"},
+			clusterIPs:    []string{"10.96.0.10", "2001:db8:100::10"},
+			serviceCIDRs:  []string{"10.96.0.0/16", "2001:db8:100::/112"},
+			podIPs:        []string{"fc00:200::3"},
+			wantDiscovery: true,
+			wantErrCIDR:   "2001:db8:100::/112",
+		},
+		{
+			name:         "IPv6-only pod on IPv4 egress skips discovery",
+			destinations: []string{"0.0.0.0/0"},
+			clusterIPs:   []string{"203.0.113.10"},
+			serviceCIDRs: []string{"203.0.113.0/24"},
+			podIPs:       []string{"fc00:200::3"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -460,9 +507,12 @@ func TestReconcileEgressClientValidatesOnlyServiceCIDRsForActiveFamily(t *testin
 				}
 			}
 
-			podIP := "10.1.2.3"
-			if slices.Contains(tt.destinations, "::/0") {
-				podIP = "fc00:100::3"
+			podIPs := tt.podIPs
+			if podIPs == nil {
+				podIPs = []string{"10.1.2.3"}
+				if slices.Contains(tt.destinations, "::/0") {
+					podIPs = []string{"fc00:100::3"}
+				}
 			}
 			eg := &coilv2.Egress{}
 			eg.Namespace, eg.Name = "default", "egress"
@@ -509,8 +559,10 @@ func TestReconcileEgressClientValidatesOnlyServiceCIDRsForActiveFamily(t *testin
 			}
 			pod := &corev1.Pod{}
 			pod.Namespace, pod.Name = "default", "client"
-			pod.Status.PodIPs = []corev1.PodIP{{IP: podIP}}
-			pod.Status.PodIP = podIP
+			for _, ip := range podIPs {
+				pod.Status.PodIPs = append(pod.Status.PodIPs, corev1.PodIP{IP: ip})
+			}
+			pod.Status.PodIP = podIPs[0]
 
 			err := watcher.reconcileEgressClient(context.Background(), eg, pod, &logr.Logger{})
 			wantLists := 0

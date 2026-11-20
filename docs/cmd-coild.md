@@ -67,9 +67,10 @@ example, `--cluster-networks=2001:db8:1234::/48` overrides only the IPv6
 default; IPv4 keeps using RFC1918.
 
 With `--enable-egress=true` (the default), `coild` requires the in-cluster
-networks to cover every `ServiceCIDR` of the IP families used by an Egress. If
-they don't, NAT setup for the affected Pods fails and is retried until
-`--cluster-networks` is set to cover the missing CIDRs.
+networks to cover every `ServiceCIDR` of the IP families used by an Egress
+for which the client Pod has an address. If they don't, NAT setup for the
+affected Pods fails and is retried until `--cluster-networks` is set to cover
+the missing CIDRs.
 
 `coild` needs `list` and `watch` permissions on `servicecidrs`, which the
 supplied ClusterRoles include, and the cluster must serve the
