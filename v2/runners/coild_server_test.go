@@ -9,7 +9,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"sync/atomic"
+	"testing"
 	"time"
 
 	current "github.com/containernetworking/cni/pkg/types/100"
@@ -21,12 +24,24 @@ import (
 	uberzap "go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/resolver"
+	"google.golang.org/grpc/status"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	k8sfake "k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/rest"
+	clientgotesting "k8s.io/client-go/testing"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
@@ -34,6 +49,7 @@ import (
 	"github.com/cybozu-go/coil/v2/pkg/cnirpc"
 	"github.com/cybozu-go/coil/v2/pkg/config"
 	"github.com/cybozu-go/coil/v2/pkg/constants"
+	"github.com/cybozu-go/coil/v2/pkg/nat/netfilter"
 	"github.com/cybozu-go/coil/v2/pkg/nodenet"
 )
 
@@ -41,6 +57,23 @@ const (
 	testIPAMKey   = "TEST_IPAM"
 	testEgressKey = "TEST_EGRESS"
 )
+
+type readerServiceCIDRSource struct{ reader client.Reader }
+
+func (s readerServiceCIDRSource) Discover(ctx context.Context) ([]string, error) {
+	var list networkingv1.ServiceCIDRList
+	if err := s.reader.List(ctx, &list); err != nil {
+		return nil, err
+	}
+	var cidrs []string
+	for _, item := range list.Items {
+		cidrs = append(cidrs, item.Spec.CIDRs...)
+	}
+	if len(cidrs) == 0 {
+		return nil, errors.New("no ServiceCIDR objects found")
+	}
+	return cidrs, nil
+}
 
 type mockNodeIPAM struct {
 	nAllocate    int
@@ -210,6 +243,14 @@ var _ = Describe("Coild server", func() {
 	metricPort := 13449
 
 	BeforeEach(func() {
+		// envtest uses 10.0.0.0/24 for Service allocation. Seed discovery
+		// explicitly so these tests exercise validation with the default networks.
+		serviceCIDR := &networkingv1.ServiceCIDR{
+			Name: "coil-egress-test",
+			Spec: networkingv1.ServiceCIDRSpec{CIDRs: []string{"10.0.0.0/24"}},
+		}
+		Expect(k8sClient.Create(context.Background(), serviceCIDR)).To(Succeed())
+
 		ctx, cancel = context.WithCancel(context.TODO())
 		mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 			Scheme:         scheme,
@@ -246,7 +287,7 @@ var _ = Describe("Coild server", func() {
 			AddressBlockGCInterval: 10 * time.Second,
 		}
 
-		serv := NewCoildServer(l, mgr, nodeIPAM, podNet, natsetup, cfg, logger, mockAlias, "test-node")
+		serv := NewCoildServer(l, mgr, nodeIPAM, podNet, natsetup, cfg, logger, mockAlias, "test-node", nil, readerServiceCIDRSource{mgr.GetAPIReader()})
 		err = mgr.Add(serv)
 		Expect(err).ToNot(HaveOccurred())
 
@@ -274,6 +315,9 @@ var _ = Describe("Coild server", func() {
 			conn = nil
 		}
 		cancel()
+		Expect(k8sClient.Delete(context.Background(), &networkingv1.ServiceCIDR{
+			Name: "coil-egress-test",
+		})).To(Succeed())
 		time.Sleep(10 * time.Millisecond)
 		os.Remove(coildSocket)
 	})
@@ -631,7 +675,7 @@ var _ = Describe("shutdown route cleanup", func() {
 			ClearRoutesOnShutdown:  clearRoutes,
 		}
 
-		serv := NewCoildServer(l, mgr, nodeIPAM, &mockPodNetwork{}, &mockNATSetup{}, servCfg, logger, mockAlias, nodeName)
+		serv := NewCoildServer(l, mgr, nodeIPAM, &mockPodNetwork{}, &mockNATSetup{}, servCfg, logger, mockAlias, nodeName, nil, nil)
 		err = mgr.Add(serv)
 		Expect(err).ToNot(HaveOccurred())
 
@@ -663,3 +707,427 @@ var _ = Describe("shutdown route cleanup", func() {
 		Consistently(func() int32 { return nodeIPAM.nClearRoutes.Load() }, "200ms").Should(Equal(int32(0)))
 	})
 })
+
+func TestGetHookValidatesOnlyServiceCIDRsForActiveFamily(t *testing.T) {
+	tests := []struct {
+		name            string
+		destinations    []string
+		clusterIPs      []string
+		serviceCIDRs    []string
+		clusterNetworks []string
+		// podIPs are the client pod addresses; nil means a dual-stack pod.
+		podIPs        []string
+		wantErrCIDR   string
+		wantDiscovery bool
+		// wantHook expects a NAT hook even when no discovery happens.
+		wantHook bool
+	}{
+		{
+			name:          "IPv4 egress ignores uncovered IPv6 ServiceCIDR",
+			destinations:  []string{"0.0.0.0/0"},
+			wantDiscovery: true,
+			clusterIPs:    []string{"10.96.0.10"},
+			serviceCIDRs:  []string{"10.96.0.0/16", "2001:db8:100::/112"},
+		},
+		{
+			name:          "IPv6 egress ignores uncovered IPv4 ServiceCIDR",
+			destinations:  []string{"::/0"},
+			wantDiscovery: true,
+			clusterIPs:    []string{"fc00:100::10"},
+			serviceCIDRs:  []string{"203.0.113.0/24", "fc00:100::/64"},
+		},
+		{
+			name:          "uncovered active IPv4 ServiceCIDR still fails",
+			destinations:  []string{"0.0.0.0/0"},
+			wantDiscovery: true,
+			clusterIPs:    []string{"203.0.113.10"},
+			serviceCIDRs:  []string{"203.0.113.0/24", "fc00:100::/64"},
+			wantErrCIDR:   "203.0.113.0/24",
+		},
+		{
+			name:          "uncovered active IPv6 ServiceCIDR still fails",
+			destinations:  []string{"::/0"},
+			wantDiscovery: true,
+			clusterIPs:    []string{"2001:db8:100::10"},
+			serviceCIDRs:  []string{"10.96.0.0/16", "2001:db8:100::/112"},
+			wantErrCIDR:   "2001:db8:100::/112",
+		},
+		{
+			name:          "dual stack egress validates both families",
+			destinations:  []string{"0.0.0.0/0", "::/0"},
+			clusterIPs:    []string{"10.96.0.10", "fc00:100::10"},
+			serviceCIDRs:  []string{"10.96.0.0/16", "fc00:100::/64"},
+			podIPs:        []string{"10.1.2.3", "fc00:200::3"},
+			wantDiscovery: true,
+		},
+		{
+			name:          "dual stack egress rejects uncovered IPv6",
+			destinations:  []string{"0.0.0.0/0", "::/0"},
+			clusterIPs:    []string{"10.96.0.10", "2001:db8:100::10"},
+			serviceCIDRs:  []string{"10.96.0.0/16", "2001:db8:100::/112"},
+			podIPs:        []string{"10.1.2.3", "fc00:200::3"},
+			wantDiscovery: true,
+			wantErrCIDR:   "2001:db8:100::/112",
+		},
+		{
+			name:          "dual stack egress rejects uncovered IPv4",
+			destinations:  []string{"0.0.0.0/0", "::/0"},
+			clusterIPs:    []string{"203.0.113.10", "fc00:100::10"},
+			serviceCIDRs:  []string{"203.0.113.0/24", "fc00:100::/64"},
+			podIPs:        []string{"10.1.2.3", "fc00:200::3"},
+			wantDiscovery: true,
+			wantErrCIDR:   "203.0.113.0/24",
+		},
+		{
+			name:            "configured networks cover nondefault ServiceCIDR",
+			destinations:    []string{"0.0.0.0/0"},
+			clusterIPs:      []string{"203.0.113.10"},
+			serviceCIDRs:    []string{"203.0.113.0/24"},
+			clusterNetworks: []string{"203.0.113.0/24"},
+			wantDiscovery:   true,
+		},
+		{
+			name:            "configured networks restrict default coverage",
+			destinations:    []string{"0.0.0.0/0"},
+			clusterIPs:      []string{"10.96.0.10"},
+			serviceCIDRs:    []string{"10.96.0.0/16"},
+			clusterNetworks: []string{"10.97.0.0/16"},
+			wantDiscovery:   true,
+			wantErrCIDR:     "10.96.0.0/16",
+		},
+		{
+			name:          "nil networks still require ServiceCIDR discovery",
+			destinations:  []string{"0.0.0.0/0"},
+			clusterIPs:    []string{"10.96.0.10"},
+			wantDiscovery: true,
+			wantErrCIDR:   "no ServiceCIDR objects found",
+		},
+		{
+			name:          "multiple gateways select IPv4 once",
+			destinations:  []string{"0.0.0.0/0"},
+			clusterIPs:    []string{"10.96.0.10", "10.96.0.11"},
+			serviceCIDRs:  []string{"10.96.0.0/16", "2001:db8:100::/112"},
+			wantDiscovery: true,
+		},
+		{
+			name:          "gateway without matching destinations is excluded",
+			destinations:  []string{"0.0.0.0/0"},
+			clusterIPs:    []string{"10.96.0.10", "2001:db8:100::10"},
+			serviceCIDRs:  []string{"10.96.0.0/16", "2001:db8:100::/112"},
+			wantDiscovery: true,
+		},
+		{
+			name:         "no matching destinations skips discovery",
+			destinations: []string{"::/0"},
+			clusterIPs:   []string{"10.96.0.10"},
+		},
+		{
+			name:          "IPv4-only pod on dual stack egress ignores uncovered IPv6 ServiceCIDR",
+			destinations:  []string{"0.0.0.0/0", "::/0"},
+			clusterIPs:    []string{"10.96.0.10", "2001:db8:100::10"},
+			serviceCIDRs:  []string{"10.96.0.0/16", "2001:db8:100::/112"},
+			podIPs:        []string{"10.1.2.3"},
+			wantDiscovery: true,
+		},
+		{
+			name:          "IPv4-only pod on dual stack egress rejects uncovered IPv4 ServiceCIDR",
+			destinations:  []string{"0.0.0.0/0", "::/0"},
+			clusterIPs:    []string{"203.0.113.10", "fc00:100::10"},
+			serviceCIDRs:  []string{"203.0.113.0/24", "fc00:100::/64"},
+			podIPs:        []string{"10.1.2.3"},
+			wantDiscovery: true,
+			wantErrCIDR:   "203.0.113.0/24",
+		},
+		{
+			name:          "IPv6-only pod on dual stack egress ignores uncovered IPv4 ServiceCIDR",
+			destinations:  []string{"0.0.0.0/0", "::/0"},
+			clusterIPs:    []string{"203.0.113.10", "fc00:100::10"},
+			serviceCIDRs:  []string{"203.0.113.0/24", "fc00:100::/64"},
+			podIPs:        []string{"fc00:200::3"},
+			wantDiscovery: true,
+		},
+		{
+			name:          "IPv6-only pod on dual stack egress rejects uncovered IPv6 ServiceCIDR",
+			destinations:  []string{"0.0.0.0/0", "::/0"},
+			clusterIPs:    []string{"10.96.0.10", "2001:db8:100::10"},
+			serviceCIDRs:  []string{"10.96.0.0/16", "2001:db8:100::/112"},
+			podIPs:        []string{"fc00:200::3"},
+			wantDiscovery: true,
+			wantErrCIDR:   "2001:db8:100::/112",
+		},
+		{
+			name:         "IPv6-only pod on IPv4 egress skips discovery",
+			destinations: []string{"0.0.0.0/0"},
+			clusterIPs:   []string{"203.0.113.10"},
+			serviceCIDRs: []string{"203.0.113.0/24"},
+			podIPs:       []string{"fc00:200::3"},
+			wantHook:     true,
+		},
+		{
+			name:         "pod without addresses skips discovery",
+			destinations: []string{"0.0.0.0/0", "::/0"},
+			clusterIPs:   []string{"203.0.113.10", "2001:db8:100::10"},
+			serviceCIDRs: []string{"203.0.113.0/24", "2001:db8:100::/112"},
+			podIPs:       []string{},
+			wantHook:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			scheme := runtime.NewScheme()
+			for _, add := range []func(*runtime.Scheme) error{
+				corev1.AddToScheme,
+				coilv2.AddToScheme,
+				networkingv1.AddToScheme,
+			} {
+				if err := add(scheme); err != nil {
+					t.Fatalf("add API scheme: %v", err)
+				}
+			}
+
+			podIPs := tt.podIPs
+			if podIPs == nil {
+				podIPs = []string{"10.0.0.1", "2001:db8::1"}
+			}
+			var ipv4, ipv6 net.IP
+			for _, s := range podIPs {
+				ip := net.ParseIP(s)
+				if ip.To4() != nil {
+					ipv4 = ip.To4()
+				} else {
+					ipv6 = ip
+				}
+			}
+
+			eg := &coilv2.Egress{}
+			eg.Namespace, eg.Name = "default", "egress"
+			eg.Spec.Destinations = tt.destinations
+			svc := &corev1.Service{}
+			svc.Namespace, svc.Name = eg.Namespace, eg.Name
+			svc.Spec.ClusterIP = tt.clusterIPs[0]
+			svc.Spec.ClusterIPs = tt.clusterIPs
+			objects := []runtime.Object{eg, svc}
+			for i, cidr := range tt.serviceCIDRs {
+				objects = append(objects, &networkingv1.ServiceCIDR{
+					Name: "cidr-" + strconv.Itoa(i),
+					Spec: networkingv1.ServiceCIDRSpec{CIDRs: []string{cidr}},
+				})
+			}
+			var networks *netfilter.ClusterNetworks
+			if tt.clusterNetworks != nil {
+				var err error
+				networks, err = netfilter.ParseClusterNetworks(tt.clusterNetworks)
+				if err != nil {
+					t.Fatalf("parse cluster networks: %v", err)
+				}
+			}
+			serviceCIDRLists := 0
+			natSetup := &mockNATSetup{}
+			k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(objects...).
+				WithInterceptorFuncs(interceptor.Funcs{
+					List: func(ctx context.Context, cl client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+						if _, ok := list.(*networkingv1.ServiceCIDRList); ok {
+							serviceCIDRLists++
+							if len(natSetup.gwnets) != 0 {
+								t.Error("NAT hook was configured before ServiceCIDR discovery")
+							}
+						}
+						return cl.List(ctx, list, opts...)
+					},
+				}).Build()
+			server := &coildServer{
+				client:            k8sClient,
+				cfg:               &config.Config{},
+				natSetup:          natSetup,
+				logger:            uberzap.NewNop(),
+				clusterNetworks:   networks,
+				serviceCIDRSource: readerServiceCIDRSource{k8sClient},
+			}
+			pod := &corev1.Pod{}
+			pod.Namespace = "default"
+			pod.Name = "client"
+			pod.Annotations = map[string]string{constants.AnnEgressPrefix + "default": "egress"}
+
+			_, err := server.getHook(context.Background(), pod, ipv4, ipv6)
+			wantLists := 0
+			if tt.wantDiscovery {
+				wantLists = 1
+			}
+			if serviceCIDRLists != wantLists {
+				t.Errorf("ServiceCIDR List calls = %d, want %d", serviceCIDRLists, wantLists)
+			}
+
+			if tt.wantErrCIDR != "" && len(natSetup.gwnets) != 0 {
+				t.Error("NAT hook was configured after validation failed")
+			}
+			if tt.wantErrCIDR == "" {
+				if wantHook := tt.wantDiscovery || tt.wantHook; (len(natSetup.gwnets) > 0) != wantHook {
+					t.Errorf("NAT gateways = %v, want active hook: %v", natSetup.gwnets, wantHook)
+				}
+				if err != nil {
+					t.Fatalf("getHook() returned unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("getHook() error = nil, want error containing %q", tt.wantErrCIDR)
+			}
+			st, ok := status.FromError(err)
+			if !ok {
+				t.Fatalf("getHook() error is not a gRPC status: %v", err)
+			}
+			for _, detail := range st.Details() {
+				if cniErr, ok := detail.(*cnirpc.CNIError); ok && strings.Contains(cniErr.Details, tt.wantErrCIDR) {
+					return
+				}
+			}
+			t.Fatalf("getHook() error details do not contain %q: %v", tt.wantErrCIDR, st.Details())
+		})
+	}
+}
+
+func TestCNIStartsWhileServiceCIDRListIsForbidden(t *testing.T) {
+	var listAttempts atomic.Int32
+	kubeClient := k8sfake.NewSimpleClientset()
+	kubeClient.PrependReactor("list", "servicecidrs", func(clientgotesting.Action) (bool, runtime.Object, error) {
+		listAttempts.Add(1)
+		return true, nil, apierrors.NewForbidden(schema.GroupResource{Group: "networking.k8s.io", Resource: "servicecidrs"}, "", errors.New("denied"))
+	})
+	source := netfilter.NewServiceCIDRInformerSource(kubeClient)
+
+	scheme := runtime.NewScheme()
+	for _, add := range []func(*runtime.Scheme) error{corev1.AddToScheme, coilv2.AddToScheme, networkingv1.AddToScheme} {
+		if err := add(scheme); err != nil {
+			t.Fatalf("add API scheme: %v", err)
+		}
+	}
+	pod := &corev1.Pod{
+		Namespace: "default",
+		Name:      "client",
+		UID:       "pod-uid",
+	}
+	egress := &coilv2.Egress{
+		Namespace: "default",
+		Name:      "egress",
+		Spec:      coilv2.EgressSpec{Destinations: []string{"0.0.0.0/0"}},
+	}
+	svc := &corev1.Service{
+		Namespace: "default",
+		Name:      "egress",
+		Spec: corev1.ServiceSpec{
+			ClusterIP:  "10.0.0.10",
+			ClusterIPs: []string{"10.0.0.10"},
+		},
+	}
+	reader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pod, egress, svc).Build()
+
+	mgr, err := ctrl.NewManager(&rest.Config{Host: "http://127.0.0.1:1"}, ctrl.Options{
+		Scheme: scheme,
+		MapperProvider: func(*rest.Config, *http.Client) (meta.RESTMapper, error) {
+			return meta.NewDefaultRESTMapper([]schema.GroupVersion{}), nil
+		},
+		Metrics:                metricsserver.Options{BindAddress: "0"},
+		HealthProbeBindAddress: "0",
+		LeaderElection:         false,
+	})
+	if err != nil {
+		t.Fatalf("create manager: %v", err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	cfg := &config.Config{EnableEgress: true}
+	podNet := &mockPodNetwork{}
+	serverRunnable := &coildServer{
+		listener:          listener,
+		apiReader:         reader,
+		client:            reader,
+		podNet:            podNet,
+		natSetup:          &mockNATSetup{},
+		logger:            uberzap.NewNop(),
+		cfg:               cfg,
+		aliasFunc:         mockAlias,
+		serviceCIDRSource: source,
+	}
+	if err := mgr.Add(source); err != nil {
+		t.Fatalf("add ServiceCIDR informer to manager: %v", err)
+	}
+	if err := mgr.Add(serverRunnable); err != nil {
+		t.Fatalf("add CNI server to manager: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	managerDone := make(chan error, 1)
+	go func() { managerDone <- mgr.Start(ctx) }()
+	defer func() {
+		cancel()
+		select {
+		case err := <-managerDone:
+			if err != nil {
+				t.Errorf("manager stopped with error: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("manager did not stop after cancellation")
+		}
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for listAttempts.Load() == 0 && time.Now().Before(deadline) {
+		select {
+		case err := <-managerDone:
+			t.Fatalf("manager exited before forbidden ServiceCIDR list was observed: %v", err)
+		default:
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if listAttempts.Load() == 0 {
+		t.Fatal("ServiceCIDR informer did not issue its forbidden initial list")
+	}
+
+	dialCtx, dialCancel := context.WithTimeout(ctx, 3*time.Second)
+	defer dialCancel()
+	c, err := grpc.NewClient(listener.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("unable to create grpc client: %v", err)
+	}
+	defer c.Close()
+
+	cni := cnirpc.NewCNIClient(c)
+	args := &cnirpc.CNIArgs{
+		Args:        map[string]string{constants.PodNameKey: "client", constants.PodNamespaceKey: "default"},
+		ContainerId: "sandbox",
+		Ifname:      "eth0",
+		// Egress validation only covers families the pod has an address for.
+		Ips:        []string{"10.1.2.3"},
+		Interfaces: map[string]bool{"eth0": false},
+	}
+	if _, err := cni.Add(dialCtx, args); err != nil {
+		t.Fatalf("CNI Add without egress annotation should succeed while discovery is unavailable: %v", err)
+	}
+
+	pod.Annotations = map[string]string{constants.AnnEgressPrefix + "default": "egress"}
+	if err := reader.Update(ctx, pod); err != nil {
+		t.Fatalf("add egress annotation to pod: %v", err)
+	}
+	_, err = cni.Add(dialCtx, args)
+	if err == nil {
+		t.Fatal("CNI Add with egress annotation succeeded despite unavailable ServiceCIDR discovery")
+	}
+	st, ok := status.FromError(err)
+	if !ok {
+		t.Fatalf("CNI Add error is not a gRPC status: %v", err)
+	}
+	if st.Code() != codes.Internal {
+		t.Fatalf("CNI Add status code = %s, want Internal", st.Code())
+	}
+	for _, detail := range st.Details() {
+		if cniErr, ok := detail.(*cnirpc.CNIError); ok && strings.Contains(cniErr.Details, "egress validation failed for cluster networks") {
+			return
+		}
+	}
+	t.Fatalf("CNI Add error details do not identify egress validation failure: %v", st.Details())
+}
